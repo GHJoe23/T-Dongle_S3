@@ -4,6 +4,7 @@
 #include "USBHIDMouse.h"
 #include <FastLED.h>
 #include "jiggler.h"
+#include "display_ui.h"
 
 #define PIN_BUTTON 0 // BOOT-Taster, aktiv LOW
 #define PIN_LED_DI 40
@@ -35,6 +36,7 @@ void setup() {
 
     FastLED.addLeds<APA102, PIN_LED_DI, PIN_LED_CI, BGR>(&statusLed, 1);
 
+    uiBegin();
     jiggler.begin(millis(), (uint32_t)esp_random());
     setStatusLed(jiggler.active());
 }
@@ -56,7 +58,10 @@ void loop() {
     int8_t dx, dy;
     if (jiggler.poll(now, dx, dy)) {
         Mouse.move(dx, dy);
+        uiJiggle(now);
     }
+
+    uiTick(now, jiggler.active(), jiggler.msUntilNext(now) / 1000, jiggler.count());
 
     delay(2);
 }

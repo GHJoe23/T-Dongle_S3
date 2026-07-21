@@ -1,20 +1,62 @@
 #include <Arduino.h>
-#include <Arduino_GFX_Library.h>
+#include "esp_random.h"
+#include "USB.h"
+#include "USBHIDMouse.h"
+#include <FastLED.h>
+#include "jiggler.h"
 
-static Arduino_DataBus *bus = new Arduino_ESP32SPI(2 /* DC */, 4 /* CS */, 5 /* SCK */, 3 /* MOSI */, GFX_NOT_DEFINED);
-static Arduino_ST7735 *gfx = new Arduino_ST7735(bus, 1 /* RST */, 1 /* Rotation */, true /* IPS */,
-                                                80, 160, 26, 1, 26, 1);
+#define PIN_BUTTON 0 // BOOT-Taster, aktiv LOW
+#define PIN_LED_DI 40
+#define PIN_LED_CI 39
+
+USBHIDMouse Mouse;
+Jiggler jiggler;
+CRGB statusLed;
+
+static bool lastBtn = HIGH;
+static uint32_t btnChangedMs = 0;
+
+static void setStatusLed(bool active) {
+    statusLed = active ? CRGB(0, 60, 0) : CRGB::Black;
+    FastLED.show();
+}
 
 void setup() {
-    gfx->begin();
-    gfx->fillScreen(RGB565_BLACK);
-    gfx->setCursor(10, 30);
-    gfx->setTextSize(2);
-    gfx->setTextColor(RGB565_GREEN, RGB565_BLACK);
-    gfx->print("Jiggler");
-    pinMode(38, OUTPUT);
-    digitalWrite(38, LOW); // Backlight an (aktiv LOW)
+    pinMode(PIN_BUTTON, INPUT_PULLUP);
+
+    // Tarnung: als handelsübliche USB-Maus ausgeben (vor begin() setzen!)
+    USB.VID(0x046D);
+    USB.PID(0xC077);
+    USB.manufacturerName("Logitech");
+    USB.productName("USB Optical Mouse");
+
+    Mouse.begin();
+    USB.begin();
+
+    FastLED.addLeds<APA102, PIN_LED_DI, PIN_LED_CI, BGR>(&statusLed, 1);
+
+    jiggler.begin(millis(), (uint32_t)esp_random());
+    setStatusLed(jiggler.active());
 }
 
 void loop() {
+    uint32_t now = millis();
+
+    // Taster entprellen, kurzer Druck toggelt AN/PAUSE
+    bool btn = digitalRead(PIN_BUTTON);
+    if (btn != lastBtn && now - btnChangedMs > 40) {
+        btnChangedMs = now;
+        lastBtn = btn;
+        if (btn == LOW) {
+            jiggler.toggle(now);
+            setStatusLed(jiggler.active());
+        }
+    }
+
+    int8_t dx, dy;
+    if (jiggler.poll(now, dx, dy)) {
+        Mouse.move(dx, dy);
+    }
+
+    delay(2);
 }

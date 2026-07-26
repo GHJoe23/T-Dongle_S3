@@ -1,21 +1,20 @@
 #include <Arduino.h>
 #include "esp_random.h"
-#include "USB.h"
-#include "USBHIDMouse.h"
 #include <FastLED.h>
 #include "jiggler.h"
+#include "usb_hid.h"
 #include "display_ui.h"
 
-#define PIN_BUTTON 0 // BOOT-Taster, aktiv LOW
+#define PIN_BUTTON 0
 #define PIN_LED_DI 40
 #define PIN_LED_CI 39
+#define LONG_PRESS_MS 800
 
-USBHIDMouse Mouse;
 Jiggler jiggler;
 CRGB statusLed;
 
-static bool lastBtn = HIGH;
-static uint32_t btnChangedMs = 0;
+static uint32_t btnDownAt = 0;
+static bool longFired = false;
 
 static void setStatusLed(bool active) {
     statusLed = active ? CRGB(0, 60, 0) : CRGB::Black;
@@ -25,14 +24,7 @@ static void setStatusLed(bool active) {
 void setup() {
     pinMode(PIN_BUTTON, INPUT_PULLUP);
 
-    // Tarnung: als handelsübliche USB-Maus ausgeben (vor begin() setzen!)
-    USB.VID(0x046D);
-    USB.PID(0xC077);
-    USB.manufacturerName("Logitech");
-    USB.productName("USB Optical Mouse");
-
-    Mouse.begin();
-    USB.begin();
+    usbHidBegin();
 
     FastLED.addLeds<APA102, PIN_LED_DI, PIN_LED_CI, BGR>(&statusLed, 1);
 
@@ -44,24 +36,30 @@ void setup() {
 void loop() {
     uint32_t now = millis();
 
-    // Taster entprellen, kurzer Druck toggelt AN/PAUSE
+    // Kurzer Druck: Jiggler AN/PAUSE. Langer Druck: Tastatur-Demo (tippt Text).
     bool btn = digitalRead(PIN_BUTTON);
-    if (btn != lastBtn && now - btnChangedMs > 40) {
-        btnChangedMs = now;
-        lastBtn = btn;
-        if (btn == LOW) {
+    if (btn == LOW && btnDownAt == 0) {
+        btnDownAt = now;
+        longFired = false;
+    }
+    if (btn == LOW && !longFired && now - btnDownAt > LONG_PRESS_MS) {
+        longFired = true;
+        usbHidTypeText("dongle-demo");
+    }
+    if (btn == HIGH && btnDownAt != 0) {
+        if (!longFired) {
             jiggler.toggle(now);
             setStatusLed(jiggler.active());
         }
+        btnDownAt = 0;
     }
 
     int8_t dx, dy;
     if (jiggler.poll(now, dx, dy)) {
-        Mouse.move(dx, dy);
+        usbHidMouseMove(dx, dy);
         uiJiggle(now);
     }
 
     uiTick(now, jiggler.active(), jiggler.msUntilNext(now) / 1000, jiggler.count());
-
     delay(2);
 }

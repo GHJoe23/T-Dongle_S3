@@ -9,11 +9,32 @@
   let bleDevice = null;
   let rxChar = null;
   let txChar = null;
-  let writePromise = Promise.resolve();
-  let bleBusy = false;
+  let gattQueue = Promise.resolve();
+  let pendingWrites = 0;
+  let lastGattOpEnd = 0;
+  let lastWriteActivity = 0;
   let mouseBusy = false;
   let rxLineBuffer = '';
   let statusPollTimer = null;
+
+  const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+
+  function enqueueGatt(opFn) {
+    const run = async () => {
+      const elapsed = performance.now() - lastGattOpEnd;
+      if (elapsed < 8) {
+        await sleep(8 - elapsed);
+      }
+      try {
+        return await opFn();
+      } finally {
+        lastGattOpEnd = performance.now();
+      }
+    };
+    const next = gattQueue.then(run, run);
+    gattQueue = next.catch(() => {});
+    return next;
+  }
 
   let deviceState = {
     j: 1,
@@ -238,16 +259,24 @@
     } catch (_) {}
   }
 
-  // Liest den vollständigen Status direkt per GATT Read von txChar (100% zuverlässig)
-  async function readStatusFromDongle(logIt = false) {
-    if (!isConnected() || !txChar || bleBusy) return;
-    try {
-      const dv = await txChar.readValue();
-      const text = new TextDecoder('utf-8').decode(dv.buffer).trim();
-      if (text.startsWith('STAT ')) {
-        applyStatJson(text.slice(5), logIt);
-      }
-    } catch (_) {}
+  // Liest den vollständigen Status per GATT Read von txChar über die zentrale GATT-Queue
+  async function readStatusFromDongle(logIt = false, force = false) {
+    if (!isConnected() || !txChar) return;
+    // Während laufender/schneller Eingabefolgen kein periodisches Status-Read einstreuen
+    if (!force && (pendingWrites > 0 || performance.now() - lastWriteActivity < 900)) {
+      return;
+    }
+    return enqueueGatt(async () => {
+      if (!isConnected() || !txChar) return;
+      if (!force && pendingWrites > 0) return;
+      try {
+        const dv = await txChar.readValue();
+        const text = new TextDecoder('utf-8').decode(dv.buffer).trim();
+        if (text.startsWith('STAT ')) {
+          applyStatJson(text.slice(5), logIt);
+        }
+      } catch (_) {}
+    });
   }
 
   function onTxNotification(event) {
@@ -334,19 +363,50 @@
 
       dongleSnippets = [];
       await sendCommand('SYS STATUS');
-      await readStatusFromDongle(true);
+      await readStatusFromDongle(true, true);
       updateStatusPills(true);
       await sendCommand('SNIP LIST');
 
       // Jede Sekunde Status vom Dongle lesen, damit Countdown & Zähler live laufen
       clearInterval(statusPollTimer);
       statusPollTimer = setInterval(() => {
-        readStatusFromDongle(false);
-      }, 1100);
+        readStatusFromDongle(false, false);
+      }, 1150);
     } catch (err) {
       addLog('ERR', err.message || String(err));
       showToast('Verbindung abgebrochen');
     }
+  }
+
+  async function writeSliceWithRetry(slice, preferNoResponse) {
+    let lastErr = null;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      if (!isConnected()) throw new Error('BLE getrennt');
+      if (attempt > 0) {
+        await sleep(22 * attempt);
+      }
+      try {
+        if (preferNoResponse && typeof rxChar.writeValueWithoutResponse === 'function') {
+          await rxChar.writeValueWithoutResponse(slice);
+        } else if (typeof rxChar.writeValueWithResponse === 'function') {
+          await rxChar.writeValueWithResponse(slice);
+        } else {
+          await rxChar.writeValue(slice);
+        }
+        return;
+      } catch (err) {
+        lastErr = err;
+        // Bei kurzem Android-GATT-Stau im 3. Versuch über WriteWithoutResponse zustellen
+        if (attempt >= 2 && typeof rxChar.writeValueWithoutResponse === 'function') {
+          try {
+            await sleep(25);
+            await rxChar.writeValueWithoutResponse(slice);
+            return;
+          } catch (_) {}
+        }
+      }
+    }
+    throw lastErr;
   }
 
   function sendCommand(cmdLine, silent = false) {
@@ -359,35 +419,29 @@
 
     const payload = new TextEncoder().encode(cmdLine + '\n');
     const chunkSize = 20;
+    pendingWrites++;
+    lastWriteActivity = performance.now();
 
-    writePromise = writePromise
-      .then(async () => {
-        bleBusy = true;
-        try {
-          for (let offset = 0; offset < payload.length; offset += chunkSize) {
-            const slice = payload.slice(offset, offset + chunkSize);
-            if (silent && typeof rxChar.writeValueWithoutResponse === 'function') {
-              await rxChar.writeValueWithoutResponse(slice);
-            } else if (typeof rxChar.writeValueWithResponse === 'function') {
-              await rxChar.writeValueWithResponse(slice);
-            } else {
-              await rxChar.writeValue(slice);
-            }
+    return enqueueGatt(async () => {
+      try {
+        for (let offset = 0; offset < payload.length; offset += chunkSize) {
+          if (offset > 0) {
+            await sleep(6);
           }
-          return true;
-        } finally {
-          bleBusy = false;
+          const slice = payload.slice(offset, offset + chunkSize);
+          await writeSliceWithRetry(slice, silent);
         }
-      })
-      .catch((err) => {
-        bleBusy = false;
+        return true;
+      } catch (err) {
         const msg = err && err.message ? err.message : String(err);
         addLog('ERR', msg);
         if (!silent) showToast(`BLE-Fehler: ${msg}`);
         return false;
-      });
-
-    return writePromise;
+      } finally {
+        pendingWrites = Math.max(0, pendingWrites - 1);
+        lastWriteActivity = performance.now();
+      }
+    });
   }
 
   // Sendet auch sehr lange Textmodule inkl. temporärem Tipp-Modus zuverlässig
@@ -725,7 +779,7 @@
       deviceState.j = nextState;
       updateStatusPills(false);
       await sendCommand(nextState ? 'J ON' : 'J OFF');
-      setTimeout(() => readStatusFromDongle(false), 60);
+      await readStatusFromDongle(false, true);
     });
 
     $('pillLayout').addEventListener('click', async () => {
@@ -735,7 +789,7 @@
       updateStatusPills(true);
       await sendCommand(`SYS LAYOUT ${nextLay}`);
       showToast(`Layout: ${nextLay}-QWERT${nextLay === 'DE' ? 'Z' : 'Y'} gespeichert`);
-      setTimeout(() => readStatusFromDongle(false), 60);
+      await readStatusFromDongle(false, true);
     });
 
     $('pillStealth').addEventListener('click', async () => {
@@ -745,7 +799,7 @@
       updateStatusPills(false);
       await sendCommand(`SYS STEALTH ${nextStl}`);
       showToast(nextStl ? 'Stealth: Display & LED AUS' : 'Display & LED wieder AN');
-      setTimeout(() => readStatusFromDongle(false), 60);
+      await readStatusFromDongle(false, true);
     });
 
     // Bottom Navigation Tabs
@@ -952,7 +1006,7 @@
       deviceState.j = 1;
       updateStatusPills(false);
       await sendCommand('J ON');
-      setTimeout(() => readStatusFromDongle(false), 60);
+      await readStatusFromDongle(false, true);
     });
 
     $('btnJigglerOff').addEventListener('click', async () => {
@@ -960,7 +1014,7 @@
       deviceState.j = 0;
       updateStatusPills(false);
       await sendCommand('J OFF');
-      setTimeout(() => readStatusFromDongle(false), 60);
+      await readStatusFromDongle(false, true);
     });
 
     $('btnSaveJiggleCfg').addEventListener('click', async () => {
@@ -971,7 +1025,7 @@
       haptic(18);
       await sendCommand(`JCFG ${minS} ${maxS} ${mode} ${auto}`);
       showToast('Jiggler-Konfiguration im NVS gespeichert');
-      setTimeout(() => readStatusFromDongle(false), 60);
+      await readStatusFromDongle(false, true);
     });
 
     $('btnSaveKeyboardCfg').addEventListener('click', async () => {
@@ -988,7 +1042,7 @@
       await sendCommand(`SYS LAYOUT ${lay}`);
       await sendCommand(`SYS DELAY ${minD} ${rnd} ${maxD}`);
       showToast('Tastaturlayout & Verzögerung im NVS gespeichert');
-      setTimeout(() => readStatusFromDongle(false), 60);
+      await readStatusFromDongle(false, true);
     });
 
     $('btnDisplayOn').addEventListener('click', async () => {
@@ -997,7 +1051,7 @@
       updateStatusPills(false);
       await sendCommand('SYS STEALTH 0');
       showToast('Display & LED eingeschaltet');
-      setTimeout(() => readStatusFromDongle(false), 60);
+      await readStatusFromDongle(false, true);
     });
 
     $('btnDisplayOff').addEventListener('click', async () => {
@@ -1006,7 +1060,7 @@
       updateStatusPills(false);
       await sendCommand('SYS STEALTH 1');
       showToast('Stealth: Display & LED ausgeschaltet');
-      setTimeout(() => readStatusFromDongle(false), 60);
+      await readStatusFromDongle(false, true);
     });
 
     $('btnSavePin').addEventListener('click', async () => {
@@ -1017,12 +1071,12 @@
       }
       await sendCommand(`SYS PIN ${pin}`);
       showToast(`Neue feste PIN: ${pin}`);
-      setTimeout(() => readStatusFromDongle(false), 60);
+      await readStatusFromDongle(false, true);
     });
 
     $('btnRequestStatus').addEventListener('click', async () => {
       await sendCommand('SYS STATUS');
-      await readStatusFromDongle(true);
+      await readStatusFromDongle(true, true);
     });
 
     $('btnBootloader').addEventListener('click', () => {

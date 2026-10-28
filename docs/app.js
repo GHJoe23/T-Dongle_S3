@@ -1530,8 +1530,8 @@
     }
   }
 
-  // WebSocket Live API (BidiGenerateContent) Verbindung mit sauberem Timeout/Reject
-  function startLiveWebSocket(apiKey, model) {
+  // WebSocket Live API (BidiGenerateContent) Verbindung mit 2-Stufen-Handshake (AUDIO+inputAudioTranscription -> TEXT)
+  function openSingleLiveWsAttempt(apiKey, model, useAudioModality) {
     return new Promise((resolve, reject) => {
       const wsUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${encodeURIComponent(apiKey)}`;
       const ws = new WebSocket(wsUrl);
@@ -1554,20 +1554,19 @@
 
       const timeoutId = setTimeout(() => {
         finishReject(new Error(`Modell "${model}" antwortet nicht auf Bidi-WebSocket`));
-      }, 2600);
+      }, 2500);
 
       ws.onopen = () => {
-        const isNativeAudio = model.includes('native-audio');
         const setupMsg = {
           setup: {
             model: `models/${model}`,
             generationConfig: {
-              responseModalities: isNativeAudio ? ['AUDIO'] : ['TEXT']
+              responseModalities: useAudioModality ? ['AUDIO'] : ['TEXT']
             },
             systemInstruction: {
               parts: [{ text: buildSystemInstruction() }]
             },
-            ...(isNativeAudio ? { inputAudioTranscription: {} } : {})
+            ...(useAudioModality ? { inputAudioTranscription: {} } : {})
           }
         };
         ws.send(JSON.stringify(setupMsg));
@@ -1614,18 +1613,26 @@
 
       ws.onclose = (ev) => {
         if (!settled) {
-          finishReject(new Error(`Code ${ev.code}${ev.reason ? ': ' + ev.reason : ' (Modell unterstützt kein Live-WS)'}`));
+          finishReject(new Error(`Code ${ev.code}${ev.reason ? ': ' + ev.reason : ''}`));
           return;
         }
-        if (voiceActive && geminiCfg.engine === 'live_ws') {
-          addLog('RX', `Live-WS beendet (${ev.code}) -> schalte um auf Smart-Live-Stream`);
-          geminiCfg.engine = 'smart_vad';
-          $('selVoiceEngine').value = 'smart_vad';
-          saveGeminiCfg();
-          showToast('Auf Smart-Live-Stream umgeschaltet (läuft weiter!)');
+        if (voiceActive && liveWs === ws) {
+          addLog('RX', `Live-WS geschlossen (${ev.code}) -> führe Sitzung als Turbo-Live-Chunks fort`);
+          liveWs = null;
+          showToast('Live-WS vom Server getrennt -> läuft als Turbo-Stream weiter');
         }
       };
     });
+  }
+
+  async function startLiveWebSocket(apiKey, model) {
+    try {
+      // 1. Versuch: Offizielles BidiGenerateContent AUDIO + inputAudioTranscription Setup (für TranscribeLive & Native-Audio)
+      return await openSingleLiveWsAttempt(apiKey, model, true);
+    } catch (firstErr) {
+      // 2. Versuch: Fallback auf TEXT-Modalität für ältere Bidi-Modelle
+      return await openSingleLiveWsAttempt(apiKey, model, false);
+    }
   }
 
   async function startVoiceDictation() {
@@ -1655,18 +1662,20 @@
       }
       const inputRate = audioCtx.sampleRate || 48000;
 
-      if (geminiCfg.engine === 'live_ws') {
+      let activeSessionEngine = geminiCfg.engine;
+      if (activeSessionEngine === 'live_ws') {
+        const chosenModel = getSelectedGeminiModel();
         setVoiceStatus('Verbinde Live-WS…');
         try {
-          liveWs = await startLiveWebSocket(geminiCfg.apiKey.trim(), getSelectedGeminiModel());
+          liveWs = await startLiveWebSocket(geminiCfg.apiKey.trim(), chosenModel);
+          showToast(`Live-WebSocket verbunden (${chosenModel}) ✓`);
         } catch (wsErr) {
-          // Automatischer nahtloser Fallback auf Smart-Live-Stream, damit das Diktat IMMER sofort funktioniert!
-          addLog('RX', `Live-WS (${wsErr.message}) -> Auto-Fallback auf Smart-Live-Stream`);
-          geminiCfg.engine = 'smart_vad';
-          $('selVoiceEngine').value = 'smart_vad';
-          saveGeminiCfg();
+          // Modell erlaubt bei Google kein Bidi-WebSocket -> nutze für diese Sitzung den schnellen 2s-Turbo-Chunk-Modus,
+          // OHNE das Dropdown des Nutzers heimlich zu verstellen!
+          addLog('RX', `Modell "${chosenModel}" lehnt WebSocket ab (${wsErr.message}) -> nutze 2s-Turbo-Chunks`);
+          activeSessionEngine = 'turbo_chunk';
           liveWs = null;
-          showToast('Nutze Smart-Live-Stream (kompatibel mit deinem Modell)');
+          showToast(`Hinweis: ${chosenModel} unterstützt kein WS -> nutze 2s-Turbo-Stream!`);
         }
       }
 
@@ -1686,7 +1695,7 @@
       $('voiceCockpit').classList.add('recording');
       $('voiceMicIcon').textContent = '⏹️';
       $('voiceBtnLabel').textContent = 'Diktat stoppen (läuft live)';
-      setVoiceStatus('Hört zu…');
+      setVoiceStatus(activeSessionEngine === 'live_ws' ? 'Live-WS aktiv' : activeSessionEngine === 'turbo_chunk' ? 'Turbo-Live…' : 'Hört zu…');
       setVoiceInterim('🎙️ Mikrofon aktiv – sprich über den roten Strich im Pegelbalken…');
       haptic(25);
 
@@ -1707,31 +1716,43 @@
         const pcm16 = downsampleTo16kPcm(inputBuf, inputRate);
         const now = performance.now();
 
-        if (geminiCfg.engine === 'live_ws' && liveWs && liveWs.readyState === WebSocket.OPEN) {
-          wsChunkAccum.push(pcm16);
-          wsChunkSamples += pcm16.length;
-          if (wsChunkSamples >= 3200) {
-            const b64 = encodePcmBase64(wsChunkAccum);
-            wsChunkAccum = [];
-            wsChunkSamples = 0;
-            liveWs.send(
-              JSON.stringify({
-                realtimeInput: {
-                  mediaChunks: [
-                    {
-                      mimeType: 'audio/pcm;rate=16000',
-                      data: b64
-                    }
-                  ]
-                }
-              })
-            );
+        if (activeSessionEngine === 'live_ws' && liveWs && liveWs.readyState === WebSocket.OPEN) {
+          // Nur senden wenn über Noise-Gate oder kurz nach Sprache (spart Tokens bei Stille)
+          const gatePct = geminiCfg.noiseGatePct || 42;
+          if (pct >= gatePct) {
+            vadLastVoiceAt = now;
+          }
+          if (pct >= gatePct || now - vadLastVoiceAt < 1200) {
+            wsChunkAccum.push(pcm16);
+            wsChunkSamples += pcm16.length;
+            if (wsChunkSamples >= 2400) {
+              const b64 = encodePcmBase64(wsChunkAccum);
+              const sentSec = wsChunkSamples / 16000;
+              wsChunkAccum = [];
+              wsChunkSamples = 0;
+              geminiCfg.totalAudioSec = (geminiCfg.totalAudioSec || 0) + sentSec;
+              geminiCfg.totalTokens = (geminiCfg.totalTokens || 0) + Math.round(sentSec * 32);
+              updateUsageStatsUi();
+              liveWs.send(
+                JSON.stringify({
+                  realtimeInput: {
+                    mediaChunks: [
+                      {
+                        mimeType: 'audio/pcm;rate=16000',
+                        data: b64
+                      }
+                    ]
+                  }
+                })
+              );
+            }
           }
           return;
         }
 
-        // Engine: smart_vad mit einstellbarem Noise-Gate (roter Strich im Pegelbalken)
-        const gatePct = geminiCfg.noiseGatePct || 28;
+        // Engine: smart_vad (Satzweise) ODER turbo_chunk (Alle ~2.2s laufend während des Redens)
+        const isTurbo = activeSessionEngine === 'turbo_chunk';
+        const gatePct = geminiCfg.noiseGatePct || 42;
         if (pct >= gatePct) {
           if (!vadSpeaking) {
             vadSpeaking = true;
@@ -1749,18 +1770,30 @@
           vadVoicedSampleCount += pcm16.length;
 
           const voicedSec = (vadVoicedSampleCount / 16000).toFixed(1);
-          setVoiceInterim(`🗣️ Sprache aktiv (${voicedSec}s über Gate) – kurz pausieren zum Senden…`);
+          setVoiceInterim(
+            isTurbo
+              ? `⚡ Turbo-Stream (${voicedSec}s) – sendet laufend beim Sprechen…`
+              : `🗣️ Sprache aktiv (${voicedSec}s über Gate) – kurz pausieren zum Senden…`
+          );
 
-          // Auto-Flush nach 7 Sekunden durchgehendem Sprechen
-          if (now - vadSegmentStartAt >= 7000) {
-            flushCurrentVadSegment(false);
+          // Im Turbo-Modus alle 2.8s (bzw. im Satz-Modus nach 7s) automatisch zwischensenden
+          const maxContinuousMs = isTurbo ? 2800 : 7000;
+          if (now - vadSegmentStartAt >= maxContinuousMs) {
+            flushCurrentVadSegment(isTurbo);
           }
         } else {
           if (vadSpeaking) {
             vadActiveChunks.push(pcm16);
             vadActiveSampleCount += pcm16.length;
-            if (now - vadLastVoiceAt >= geminiCfg.vadSilenceMs) {
-              flushCurrentVadSegment(false);
+            // Im Turbo-Modus reicht schon eine Mini-Wortlücke von 220ms (ab 1.4s Redezeit) zum Live-Senden!
+            const silenceNeeded =
+              isTurbo && vadVoicedSampleCount >= 22000
+                ? 220
+                : isTurbo
+                ? 420
+                : geminiCfg.vadSilenceMs;
+            if (now - vadLastVoiceAt >= silenceNeeded) {
+              flushCurrentVadSegment(isTurbo);
             }
           } else {
             // Im Ruhezustand die letzten ~350ms als Pre-Roll im Ringpuffer behalten
@@ -1785,7 +1818,7 @@
     const wasActive = voiceActive;
     voiceActive = false;
 
-    if (wasActive && geminiCfg.engine === 'smart_vad' && vadActiveChunks.length > 0) {
+    if (wasActive && vadActiveChunks.length > 0) {
       flushCurrentVadSegment(true);
     }
 
@@ -2059,11 +2092,11 @@
 
     $('btnVoiceFlushNow').addEventListener('click', () => {
       haptic(12);
-      if (voiceActive && geminiCfg.engine === 'smart_vad') {
+      if (voiceActive) {
         flushCurrentVadSegment(true);
         showToast('Abschnitt sofort an Gemini gesendet');
       } else {
-        showToast('Nur während laufendem Smart-Diktat aktiv');
+        showToast('Nur während laufendem Diktat aktiv');
       }
     });
 
@@ -2140,7 +2173,22 @@
       syncGeminiCfgFromUi();
     });
 
-    ['selVoiceStyle', 'chkVoiceClean', 'chkVoiceCommands', 'chkVoiceAutoSpace', 'selVoiceEngine', 'selGeminiModel', 'inpCustomGeminiModel', 'inpGeminiKey'].forEach((id) => {
+    $('selVoiceEngine').addEventListener('change', () => {
+      if ($('selVoiceEngine').value === 'live_ws' && Array.isArray(geminiCfg.cachedModels)) {
+        const curId = $('selGeminiModel').value;
+        const curObj = geminiCfg.cachedModels.find((m) => m.id === curId);
+        if (!curObj || !curObj.hasBidi) {
+          const bestBidi = geminiCfg.cachedModels.find((m) => m.hasBidi);
+          if (bestBidi) {
+            $('selGeminiModel').value = bestBidi.id;
+            showToast(`Für WebSocket kompatibles Modell gewählt: ${bestBidi.id}`);
+          }
+        }
+      }
+      syncGeminiCfgFromUi();
+    });
+
+    ['selVoiceStyle', 'chkVoiceClean', 'chkVoiceCommands', 'chkVoiceAutoSpace', 'selGeminiModel', 'inpCustomGeminiModel', 'inpGeminiKey'].forEach((id) => {
       const el = $(id);
       if (el) el.addEventListener('change', syncGeminiCfgFromUi);
     });

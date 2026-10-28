@@ -9,7 +9,7 @@
   <title>LogiControl K400+ • T-Dongle S3</title>
   <link rel="manifest" href="./manifest.json">
   <link rel="icon" type="image/svg+xml" href="./icon.svg">
-  <link rel="stylesheet" href="./style.css?v=9">
+  <link rel="stylesheet" href="./style.css?v=10">
 </head>
 <body>
 
@@ -243,12 +243,13 @@
           <div>
             <label class="field-label">Streaming-Engine</label>
             <select id="selVoiceEngine">
-              <option value="smart_vad">Smart-Live-Stream (VAD + KI-Politur)</option>
-              <option value="live_ws">WebSocket Live API (BidiGenerateContent)</option>
+              <option value="smart_vad">1. Smart-Satz-Diktat (Satzweise bei Pause – beste Glättung)</option>
+              <option value="turbo_chunk">2. Turbo-Live-Chunks (Alle ~2s beim Reden – für 3.5/3.8)</option>
+              <option value="live_ws">3. WebSocket Live-API (Wort-für-Wort – nur [Live-WS] Modelle)</option>
             </select>
           </div>
           <div>
-            <label class="field-label">Gemini-Modell (3.x / Flash-Lite zuerst)</label>
+            <label class="field-label">Gemini-Modell (3.x / Flash zuerst)</label>
             <select id="selGeminiModel">
               <option value="gemini-2.5-flash">Bitte unten "Modelle laden" tippen…</option>
             </select>
@@ -637,6 +638,6 @@
     </button>
   </nav>
 
-  <script src="./app.js?v=9"></script>
+  <script src="./app.js?v=10"></script>
 </body>
 </html>

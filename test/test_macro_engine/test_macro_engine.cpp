@@ -101,6 +101,20 @@ void test_parse_snippet_and_sys() {
     TEST_ASSERT_EQUAL_UINT8('B', emitted[1].key);
 }
 
+void test_parse_mic_commands() {
+    MacroEngine *e = newEngine();
+    TEST_ASSERT_TRUE(e->handleLine(0, "MIC"));
+    TEST_ASSERT_TRUE(emitted[0].type == ActionType::ConfigMic);
+    TEST_ASSERT_EQUAL_UINT8('T', emitted[0].key);
+
+    TEST_ASSERT_TRUE(e->handleLine(0, "MIC CFG 2 50 1"));
+    TEST_ASSERT_TRUE(emitted[1].type == ActionType::ConfigMic);
+    TEST_ASSERT_EQUAL_UINT8('C', emitted[1].key);
+    TEST_ASSERT_EQUAL_INT32(2, emitted[1].intParams[0]);
+    TEST_ASSERT_EQUAL_INT32(50, emitted[1].intParams[1]);
+    TEST_ASSERT_EQUAL_INT32(1, emitted[1].intParams[2]);
+}
+
 void test_macro_executes_steps_with_timing() {
     MacroEngine *e = newEngine();
     TEST_ASSERT_TRUE(e->handleLine(0, "M1"));
@@ -141,6 +155,7 @@ int main(int, char **) {
     RUN_TEST(test_parse_combo_gui_letter);
     RUN_TEST(test_parse_mouse_and_media);
     RUN_TEST(test_parse_snippet_and_sys);
+    RUN_TEST(test_parse_mic_commands);
     RUN_TEST(test_macro_executes_steps_with_timing);
     RUN_TEST(test_macro_busy_rejects_second);
     RUN_TEST(test_unknown_macro_and_command);

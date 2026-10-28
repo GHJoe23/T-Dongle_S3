@@ -272,6 +272,46 @@ bool MacroEngine::parseSystemCmd(const char *s, Action &out) {
     return false;
 }
 
+bool MacroEngine::parseMicCmd(const char *s, Action &out) {
+    memset(&out, 0, sizeof(out));
+    out.type = ActionType::ConfigMic;
+    if (strcmp(s, "TOGGLE") == 0) {
+        out.key = 'T';
+        return true;
+    }
+    if (strcmp(s, "ON") == 0) {
+        out.key = 'M';
+        out.intParams[0] = 1;
+        return true;
+    }
+    if (strcmp(s, "OFF") == 0) {
+        out.key = 'M';
+        out.intParams[0] = 0;
+        return true;
+    }
+    if (strncmp(s, "CFG ", 4) == 0) {
+        char buf[48];
+        strncpy(buf, s + 4, sizeof(buf) - 1);
+        buf[sizeof(buf) - 1] = 0;
+        char *p1 = strtok(buf, " ");
+        char *p2 = strtok(nullptr, " ");
+        char *p3 = strtok(nullptr, " ");
+        if (!p1 || !p2) return false;
+        int mode = atoi(p1);
+        int thr = atoi(p2);
+        int bossAct = p3 ? atoi(p3) : 0;
+        if (mode < 0 || mode > 3 || thr < 5 || thr > 98 || bossAct < 0 || bossAct > 2) {
+            return false;
+        }
+        out.key = 'C';
+        out.intParams[0] = mode;
+        out.intParams[1] = thr;
+        out.intParams[2] = bossAct;
+        return true;
+    }
+    return false;
+}
+
 bool MacroEngine::handleLine(uint32_t now, const char *line) {
     if (!line || !line[0]) {
         emitError("empty");
@@ -389,6 +429,24 @@ bool MacroEngine::handleLine(uint32_t now, const char *line) {
         Action a;
         if (!parseSystemCmd(line + 4, a)) {
             emitError("bad sys");
+            return false;
+        }
+        if (_emit) _emit(a, _ctx);
+        return true;
+    }
+
+    // MIC / MIC ON / MIC OFF / MIC TOGGLE / MIC CFG <mode> <threshold> [bossAction]
+    if (strcmp(line, "MIC") == 0) {
+        Action a{};
+        a.type = ActionType::ConfigMic;
+        a.key = 'T';
+        if (_emit) _emit(a, _ctx);
+        return true;
+    }
+    if (strncmp(line, "MIC ", 4) == 0) {
+        Action a;
+        if (!parseMicCmd(line + 4, a)) {
+            emitError("bad mic");
             return false;
         }
         if (_emit) _emit(a, _ctx);

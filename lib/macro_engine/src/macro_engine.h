@@ -11,6 +11,7 @@ enum class ActionType : uint8_t {
     MediaKey,
     SnippetOp,
     SystemCmd,
+    ConfigMic,
     Error
 };
 
@@ -20,8 +21,8 @@ struct Action {
     uint8_t mods[4];
     uint8_t modCount;
     uint8_t key;
-    const char *longText = nullptr;
-    int32_t intParams[4] = {0, 0, 0, 0};
+    const char *longText;
+    int32_t intParams[4];
 
     const char *cstr() const {
         return longText ? longText : text;
@@ -64,6 +65,7 @@ private:
     bool parseJigglerCfg(const char *s, Action &out);
     bool parseSnippetOp(const char *s, Action &out);
     bool parseSystemCmd(const char *s, Action &out);
+    bool parseMicCmd(const char *s, Action &out);
     void emitError(const char *reason);
     void startMacro(uint32_t now, uint8_t idx);
 };

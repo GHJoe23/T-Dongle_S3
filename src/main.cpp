@@ -1,7 +1,9 @@
 #include <Arduino.h>
 #include <stdio.h>
+#include <string.h>
+#if !defined(ARDUINO_ARCH_NRF52)
 #include "esp_random.h"
-#include <FastLED.h>
+#endif
 #include "jiggler.h"
 #include "keymap_de.h"
 #include "macro_engine.h"
@@ -9,52 +11,75 @@
 #include "usb_hid.h"
 #include "ble_remote.h"
 #include "display_ui.h"
+#include "mic_sensor.h"
 
+#if !defined(ARDUINO_ARCH_NRF52)
 #define PIN_BUTTON 0
-#define PIN_LED_DI 40
-#define PIN_LED_CI 39
 #define STEALTH_PRESS_MS 1000
 #define BOOTLOADER_HOLD_MS 5000
-
-Jiggler jiggler;
-CRGB statusLed;
-DeviceSettings cfg;
-
 static uint32_t btnDownAt = 0;
 static bool bootloaderTriggered = false;
+#endif
+
+Jiggler jiggler;
+DeviceSettings cfg;
+
 static bool sendCustomReply = false;
 static uint32_t lastBleStatSec = 0xFFFFFFFFUL;
+static uint32_t lastMouseMoveMs = 0;
+static int16_t pendingMouseDx = 0;
+static int16_t pendingMouseDy = 0;
+static int16_t pendingMouseWheel = 0;
+static int16_t pendingMousePan = 0;
+
+static void flushPendingMouseMove() {
+    if (pendingMouseDx != 0 || pendingMouseDy != 0 || pendingMouseWheel != 0 || pendingMousePan != 0) {
+        int8_t stepDx = (int8_t)constrain(pendingMouseDx, -127, 127);
+        int8_t stepDy = (int8_t)constrain(pendingMouseDy, -127, 127);
+        int8_t stepWheel = (int8_t)constrain(pendingMouseWheel, -127, 127);
+        int8_t stepPan = (int8_t)constrain(pendingMousePan, -127, 127);
+        usbHidMouseMove(stepDx, stepDy, stepWheel, stepPan);
+        pendingMouseDx -= stepDx;
+        pendingMouseDy -= stepDy;
+        pendingMouseWheel -= stepWheel;
+        pendingMousePan -= stepPan;
+    }
+}
 
 // ---- Klassische Schnell-Makros (M1..M3) ----
 static MacroStep m1steps[] = {
-    {0, {ActionType::Combo, "", {0x83, 0, 0, 0}, 1, 'L'}}, // Win+L (Sperren)
+    {0, {ActionType::Combo, "", {0x83, 0, 0, 0}, 1, 'L', nullptr, {0, 0, 0, 0}}}, // Win+L (Sperren)
 };
 static MacroStep m2steps[] = {
-    {0, {ActionType::Combo, "", {0x80, 0x81, 0, 0}, 2, 0xB1}}, // Strg+Shift+Esc (Task-Manager)
+    {0, {ActionType::Combo, "", {0x80, 0x81, 0, 0}, 2, 0xB1, nullptr, {0, 0, 0, 0}}}, // Strg+Shift+Esc (Task-Manager)
 };
 static MacroStep m3steps[] = {
-    {0, {ActionType::Combo, "", {0x83, 0, 0, 0}, 1, 'D'}}, // Win+D (Desktop)
+    {0, {ActionType::Combo, "", {0x83, 0, 0, 0}, 1, 'D', nullptr, {0, 0, 0, 0}}}, // Win+D (Desktop)
 };
 static Macro macros[] = {{m1steps, 1}, {m2steps, 1}, {m3steps, 1}};
 MacroEngine engine(macros, 3);
 
-static void updateStatusLed() {
-    if (cfg.stealthMode) {
-        statusLed = CRGB::Black;
-    } else if (jiggler.active()) {
-        statusLed = CRGB(0, 50, 0); // Grün = Jiggler aktiv
-    } else {
-        statusLed = CRGB(20, 0, 0); // Schwaches Rot = Jiggler pausiert
-    }
-    FastLED.show();
+static uint32_t hwRandomSeed() {
+#if defined(ARDUINO_ARCH_NRF52)
+    uint32_t s = NRF_FICR->DEVICEID[0] ^ NRF_FICR->DEVICEID[1] ^ micros();
+#else
+    uint32_t s = (uint32_t)esp_random();
+#endif
+    return s ? s : 0x9E3779B9UL;
 }
 
 static void sendStatusJson() {
-    char buf[280];
+    static char buf[240];
     uint32_t now = millis();
+#if defined(ARDUINO_ARCH_NRF52)
+    const char *hwTag = "XIAO";
+#else
+    const char *hwTag = "S3";
+#endif
     snprintf(
         buf, sizeof(buf),
-        "STAT {\"j\":%d,\"min\":%u,\"max\":%u,\"mode\":%u,\"auto\":%d,\"lay\":\"%s\",\"delay\":%u,\"rnd\":%d,\"rmax\":%u,\"stealth\":%d,\"cnt\":%lu,\"next\":%lu,\"pin\":%lu}",
+        "STAT {\"hw\":\"%s\",\"j\":%d,\"min\":%u,\"max\":%u,\"mode\":%u,\"auto\":%d,\"lay\":\"%s\",\"delay\":%u,\"rnd\":%d,\"rmax\":%u,\"stealth\":%d,\"cnt\":%lu,\"next\":%lu,\"pin\":%lu,\"mic\":%u,\"mthr\":%u,\"mboss\":%u,\"mlvl\":%u,\"mtrig\":%lu}",
+        hwTag,
         jiggler.active() ? 1 : 0,
         (unsigned)cfg.jiggleMinSec,
         (unsigned)cfg.jiggleMaxSec,
@@ -67,20 +92,25 @@ static void sendStatusJson() {
         cfg.stealthMode ? 1 : 0,
         (unsigned long)jiggler.count(),
         (unsigned long)(jiggler.msUntilNext(now) / 1000UL),
-        (unsigned long)cfg.blePin
+        (unsigned long)cfg.blePin,
+        (unsigned)cfg.micMode,
+        (unsigned)cfg.micThreshold,
+        (unsigned)cfg.micBossAction,
+        (unsigned)micGetLevel(),
+        (unsigned long)micGetTriggerCount()
     );
     bleSetStatus(buf);
     sendCustomReply = true;
 }
 
 static void sendSnippetList() {
-    char line[340];
-    SnippetSlot slot;
+    static char line[240];
+    static SnippetSlot slot;
     for (uint8_t i = 0; i < MAX_SNIPPETS; i++) {
         if (storageGetSnippet(i, slot)) {
             snprintf(line, sizeof(line), "SNIP %u|%s|%s", (unsigned)i, slot.title, slot.text);
             bleSend(line);
-            delay(12);
+            delay(10);
         }
     }
     bleSend("SNIP END");
@@ -89,10 +119,21 @@ static void sendSnippetList() {
 
 static void enterBootloaderMode() {
     bleSend("OK BOOTLOADER");
-    statusLed = CRGB(0, 0, 90);
-    FastLED.show();
     uiShowBootloaderScreen();
     usbHidEnterBootloader();
+}
+
+static void executeBossAction() {
+    uint8_t winMod[1] = {0x83}; // GUI / Windows-Taste
+    if (cfg.micBossAction == 0) {
+        usbHidCombo(winMod, 1, 'L', cfg.layout);
+    } else if (cfg.micBossAction == 1) {
+        usbHidCombo(winMod, 1, 'D', cfg.layout);
+    } else {
+        usbHidMediaKey(0x00E2);
+        delay(20);
+        usbHidCombo(winMod, 1, 'D', cfg.layout);
+    }
 }
 
 static void dispatch(const Action &a, void *) {
@@ -109,7 +150,6 @@ static void dispatch(const Action &a, void *) {
         case ActionType::ToggleJiggler:
             if (a.intParams[0] < 0) jiggler.toggle(now);
             else jiggler.setActive(now, a.intParams[0] != 0);
-            updateStatusLed();
             sendStatusJson();
             break;
 
@@ -125,11 +165,17 @@ static void dispatch(const Action &a, void *) {
             break;
 
         case ActionType::MouseMove:
-            usbHidMouseMove((int8_t)a.intParams[0], (int8_t)a.intParams[1],
-                            (int8_t)a.intParams[2], (int8_t)a.intParams[3]);
+            lastMouseMoveMs = now;
+            pendingMouseDx += (int16_t)a.intParams[0];
+            pendingMouseDy += (int16_t)a.intParams[1];
+            pendingMouseWheel += (int16_t)a.intParams[2];
+            pendingMousePan += (int16_t)a.intParams[3];
+            sendCustomReply = true;
             break;
 
         case ActionType::MouseClick:
+            lastMouseMoveMs = now;
+            flushPendingMouseMove();
             usbHidMouseClick((char)a.key);
             break;
 
@@ -142,7 +188,7 @@ static void dispatch(const Action &a, void *) {
             if (a.key == 'L') {
                 sendSnippetList();
             } else if (a.key == 'R') {
-                SnippetSlot s;
+                static SnippetSlot s;
                 if (storageGetSnippet(slotId, s)) {
                     usbHidTypeText(s.text, cfg.layout, cfg.keyDelayMs, cfg.randomDelay, cfg.keyDelayMaxMs);
                 } else {
@@ -164,7 +210,6 @@ static void dispatch(const Action &a, void *) {
                 cfg.stealthMode = (a.intParams[0] != 0);
                 storageSaveSettings(cfg);
                 uiSetStealth(cfg.stealthMode);
-                updateStatusLed();
                 sendStatusJson();
             } else if (a.key == 'L') {
                 cfg.layout = (a.intParams[0] == 1) ? KeyboardLayout::US_QWERTY : KeyboardLayout::DE_QWERTZ;
@@ -190,53 +235,96 @@ static void dispatch(const Action &a, void *) {
             }
             break;
 
+        case ActionType::ConfigMic:
+            if (a.key == 'T') {
+                cfg.micMode = (cfg.micMode == 0) ? (uint8_t)MicMode::CLAP_CONTROL : (uint8_t)MicMode::OFF;
+            } else if (a.key == 'M') {
+                cfg.micMode = (a.intParams[0] != 0) ? (uint8_t)MicMode::CLAP_CONTROL : (uint8_t)MicMode::OFF;
+            } else if (a.key == 'C') {
+                cfg.micMode = (uint8_t)a.intParams[0];
+                cfg.micThreshold = (uint8_t)a.intParams[1];
+                cfg.micBossAction = (uint8_t)a.intParams[2];
+            }
+            storageSaveSettings(cfg);
+            micConfigure((MicMode)cfg.micMode, cfg.micThreshold);
+            sendStatusJson();
+            break;
+
         case ActionType::Error:
             break;
     }
 }
 
 static void onBleLine(const char *line, void *) {
-    if (!(line[0] == 'M' && line[1] == ' ') && strcmp(line, "SYS STATUS") != 0) {
+    bool isMouseMove = (line[0] == 'M' && line[1] == ' ');
+    if (!isMouseMove && strcmp(line, "SYS STATUS") != 0) {
         uiFlashCommand(line);
     }
     sendCustomReply = false;
     bool ok = engine.handleLine(millis(), line);
-    if (!sendCustomReply) {
+    if (!sendCustomReply && !isMouseMove) {
         bleSend(ok ? "OK" : "ERR");
     }
 }
 
 void setup() {
-    pinMode(PIN_BUTTON, INPUT_PULLUP);
+    uint32_t seed = hwRandomSeed();
+    randomSeed(seed);
 
-    storageBegin(cfg);
+#if !defined(ARDUINO_ARCH_NRF52)
+    pinMode(PIN_BUTTON, INPUT_PULLUP);
+#endif
+
+    // 1. USB HID sofort beim Start initialisieren
     usbHidBegin();
 
-    FastLED.addLeds<APA102, PIN_LED_DI, PIN_LED_CI, BGR>(&statusLed, 1);
-
+    // 2. Bluetooth LE vor Dateisystem starten (auf nRF52840 wichtig für SoftDevice S140 + InternalFS)
     engine.begin(dispatch, nullptr);
+    bleBegin(DEFAULT_BLE_PIN, onBleLine, nullptr);
 
-    bleBegin(cfg.blePin, onBleLine, nullptr);
+    // 3. Persistente Konfiguration & Snippets laden
+    storageBegin(cfg);
+    bleUpdatePasskey(cfg.blePin);
 
+    // 4. Display / Onboard-RGB-LED initialisieren
     uiBegin(cfg.stealthMode);
-    uiSetBleStatus(false, cfg.blePin);
     uiSetConfigInfo(cfg.layout, cfg.jiggleMode);
+    uiSetBleStatus(false, cfg.blePin);
 
+    // 5. Onboard PDM-Mikrofon starten (auf XIAO nRF52840 Sense aktiv, auf ESP32-S3 No-Op)
+    micBegin((MicMode)cfg.micMode, cfg.micThreshold);
+
+    // 6. Mouse-Jiggler initialisieren
     uint32_t now = millis();
-    jiggler.begin(now, (uint32_t)esp_random());
+    jiggler.begin(now, seed);
     jiggler.configure(now, cfg.jiggleMinSec, cfg.jiggleMaxSec, cfg.jiggleMode);
     jiggler.setActive(now, cfg.jiggleAutoStart);
-    updateStatusLed();
+
     sendStatusJson();
 }
 
 void loop() {
     uint32_t now = millis();
 
-    // Hardware-Button:
-    // < 1s: Jiggler AN/PAUSE
-    // 1..4.9s: Stealth-Modus (Display+LED komplett aus/an)
-    // >= 5s gehalten: Direkt in den USB-Bootloader / Flash-Modus starten
+#if defined(ARDUINO_ARCH_NRF52)
+    // 1a. XIAO nRF52840 Sense: Internes PDM-Mikrofon (Doppel-Klatsch / Dreifach-Klatsch / Boss-Guard)
+    MicEvent mev = micPoll(now);
+    if (mev == MicEvent::DOUBLE_CLAP) {
+        jiggler.toggle(now);
+        uiFlashCommand("CLAP2");
+        sendStatusJson();
+    } else if (mev == MicEvent::TRIPLE_CLAP) {
+        cfg.stealthMode = !cfg.stealthMode;
+        storageSaveSettings(cfg);
+        uiSetStealth(cfg.stealthMode);
+        sendStatusJson();
+    } else if (mev == MicEvent::BOSS_TRIGGER) {
+        uiFlashCommand("BOSS");
+        executeBossAction();
+        sendStatusJson();
+    }
+#else
+    // 1b. LilyGO T-Dongle S3: Physischer Gehäuse-Taster an GPIO0
     bool btn = digitalRead(PIN_BUTTON);
     if (btn == LOW && btnDownAt == 0) {
         btnDownAt = now;
@@ -254,26 +342,30 @@ void loop() {
                 cfg.stealthMode = !cfg.stealthMode;
                 storageSaveSettings(cfg);
                 uiSetStealth(cfg.stealthMode);
-                updateStatusLed();
                 sendStatusJson();
             } else if (held >= 30) {
                 jiggler.toggle(now);
-                updateStatusLed();
                 sendStatusJson();
             }
         }
     }
+#endif
 
+    // 2. BLE-Kommando-Queue verarbeiten & kumulierte Touchpad-Bewegungen sofort ausführen
     blePoll();
+    flushPendingMouseMove();
 
+    // 3. Mouse-Jiggler ausführen
     int8_t dx, dy;
     if (jiggler.poll(now, dx, dy)) {
         usbHidMouseMove(dx, dy);
         uiJiggle(now);
     }
 
+    // 4. Makro-Schritte abarbeiten
     engine.tick(now);
 
+    // 5. BLE-Verbindungsstatus überwachen
     static bool lastBle = false;
     bool ble = bleConnected();
     if (ble != lastBle) {
@@ -284,14 +376,14 @@ void loop() {
         }
     }
 
-    // Jede Sekunde den aktuellen Status (Countdown & Zähler) für BLE aktualisieren
+    // 6. Jede Sekunde Status aktualisieren (außer während aktiver Touchpad-Bewegung)
     if (now / 1000 != lastBleStatSec) {
         lastBleStatSec = now / 1000;
-        if (ble) {
+        if (ble && (now - lastMouseMoveMs > 450)) {
             sendStatusJson();
         }
     }
 
     uiTick(now, jiggler.active(), jiggler.msUntilNext(now) / 1000, jiggler.count());
-    delay(2);
+    delay(1);
 }

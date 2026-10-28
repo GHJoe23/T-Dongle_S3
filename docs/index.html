@@ -6,10 +6,10 @@
   <meta name="theme-color" content="#0B0D10">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <title>LogiControl K400+ • T-Dongle S3</title>
+  <title>LogiControl K400+ • T-Dongle S3 &amp; XIAO Sense</title>
   <link rel="manifest" href="./manifest.json">
   <link rel="icon" type="image/svg+xml" href="./icon.svg">
-  <link rel="stylesheet" href="./style.css?v=12">
+  <link rel="stylesheet" href="./style.css?v=13">
 </head>
 <body>
 
@@ -19,8 +19,8 @@
       <div class="brand">
         <div class="brand-icon">K400</div>
         <div>
-          <div class="brand-title">LogiControl S3</div>
-          <div class="brand-sub" id="connSubText">Nicht verbunden • PIN 400400</div>
+          <div class="brand-title" id="brandTitleText">LogiControl Pro</div>
+          <div class="brand-sub" id="connSubText">Bereit • T-Dongle S3 &amp; XIAO Sense</div>
         </div>
       </div>
       <button class="btn-connect" id="btnConnect">
@@ -481,6 +481,45 @@
         <button class="btn btn-primary" id="btnSaveJiggleCfg" style="width:100%;">💾 Jiggler-Konfiguration auf Dongle speichern</button>
       </div>
 
+      <!-- Onboard PDM-Mikrofon (XIAO nRF52840 Sense) -->
+      <div class="card" id="cardOnboardMic">
+        <div class="card-header">
+          <h2 class="card-title">🎙️ Onboard PDM-Mikrofon (XIAO Sense)</h2>
+          <span class="badge" id="micStatsBadge">Pegel: 0% • #0</span>
+        </div>
+
+        <div class="voice-meter-wrap" style="margin-bottom:10px;" title="Live-Geräuschpegel am XIAO-Board & Auslöseschwelle">
+          <div class="voice-meter-bar" id="dongleMicBar" style="width:0%;"></div>
+          <div class="voice-gate-marker" id="dongleMicMarker" style="left:45%;"></div>
+        </div>
+
+        <div style="margin-bottom:10px;">
+          <label class="field-label">Mikrofon-Modus (Ersatz für Hardware-Taster &amp; Wächter)</label>
+          <select id="selMicMode">
+            <option value="0">🔇 Ausgeschaltet (0 µA Stromverbrauch)</option>
+            <option value="1">👏 Klatsch-/Klopf-Steuerung (2× = Jiggler, 3× = Stealth)</option>
+            <option value="2">🛡️ Akustischer Boss-Key (Raumwächter bei Geräusch)</option>
+          </select>
+        </div>
+
+        <div class="form-row">
+          <div>
+            <label class="field-label" id="lblMicThreshold">Auslöse-Schwelle: 45%</label>
+            <input type="range" id="rangeMicThreshold" min="10" max="95" step="5" value="45" style="width:100%; accent-color:var(--primary); margin-top:8px;">
+          </div>
+          <div>
+            <label class="field-label">Boss-Key Aktion (Modus 🛡️)</label>
+            <select id="selMicBossAction">
+              <option value="0">🔒 Win + L (PC sofort sperren)</option>
+              <option value="1">🖥 Win + D (Desktop zeigen)</option>
+              <option value="2">🔇 Stumm + Win + D</option>
+            </select>
+          </div>
+        </div>
+
+        <button class="btn btn-primary" id="btnSaveMicCfg" style="width:100%;">💾 Mikrofon-Konfiguration auf XIAO speichern</button>
+      </div>
+
       <!-- Keyboard, Random Delay, Stealth & Security -->
       <div class="card">
         <div class="card-header">
@@ -533,8 +572,8 @@
         <div class="card-header">
           <h2 class="card-title">🔧 Firmware-Flash &amp; Diagnose</h2>
         </div>
-        <p style="font-size:0.8rem; color:var(--text-muted); margin-top:0;">
-          Versetzt den T-Dongle S3 direkt per Software in den ESP32-S3 Download-Modus (COM-Port wird sichtbar), ohne beim Einstecken den kleinen Knopf drücken zu müssen.
+        <p style="font-size:0.8rem; color:var(--text-muted); margin-top:0;" id="bootloaderHintText">
+          Versetzt das verbundene Modul direkt per Software in den Flash-/Bootloader-Modus (XIAO Sense: UF2-Laufwerk XIAO-SENSE • T-Dongle S3: ESP32 Download-Port), ohne einen Knopf am Gehäuse drücken zu müssen.
         </p>
         <div class="btn-row">
           <button class="btn" id="btnRequestStatus">📊 Status synchronisieren</button>
@@ -637,6 +676,6 @@
     </button>
   </nav>
 
-  <script src="./app.js?v=12"></script>
+  <script src="./app.js?v=13"></script>
 </body>
 </html>

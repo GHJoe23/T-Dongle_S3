@@ -37,6 +37,7 @@
   }
 
   let deviceState = {
+    hw: '',
     j: 1,
     min: 30,
     max: 60,
@@ -49,7 +50,12 @@
     stealth: 0,
     cnt: 0,
     next: 30,
-    pin: 400400
+    pin: 400400,
+    mic: 1,
+    mthr: 45,
+    mboss: 0,
+    mlvl: 0,
+    mtrig: 0
   };
 
   let dongleSnippets = [];
@@ -177,14 +183,20 @@
     const btn = $('btnConnect');
     const lbl = $('btnConnectLabel');
     const sub = $('connSubText');
+    const brand = $('brandTitleText');
     if (isConnected()) {
       btn.classList.add('connected');
       lbl.textContent = 'Verbunden';
-      sub.textContent = `USB Receiver • PIN ${deviceState.pin}`;
+      const hwName = deviceState.hw === 'XIAO' ? 'XIAO nRF52840 Sense' : deviceState.hw === 'S3' ? 'T-Dongle S3' : 'USB Receiver';
+      sub.textContent = `${hwName} • PIN ${deviceState.pin}`;
+      if (brand) {
+        brand.textContent = deviceState.hw === 'XIAO' ? 'LogiControl • XIAO Sense' : deviceState.hw === 'S3' ? 'LogiControl • T-Dongle S3' : 'LogiControl Pro';
+      }
     } else {
       btn.classList.remove('connected');
       lbl.textContent = 'Verbinden';
-      sub.textContent = `Bereit • Standard-PIN ${deviceState.pin}`;
+      sub.textContent = 'Bereit • T-Dongle S3 & XIAO Sense';
+      if (brand) brand.textContent = 'LogiControl Pro';
     }
     updateStatusPills(false);
   }
@@ -213,12 +225,35 @@
       pStlTxt.textContent = 'Stealth: DUNKEL';
     } else {
       pStl.className = 'status-pill';
-      pStlTxt.textContent = 'Display: AN';
+      pStlTxt.textContent = deviceState.hw === 'XIAO' ? 'RGB-LED: AN' : 'Display: AN';
+    }
+
+    if ($('cardOnboardMic')) {
+      $('cardOnboardMic').style.display = (isConnected() && deviceState.hw === 'S3') ? 'none' : '';
     }
 
     $('jiggleStatsBadge').textContent = `#${deviceState.cnt} Bewegungen`;
+    if ($('micStatsBadge')) {
+      $('micStatsBadge').textContent = `Pegel: ${deviceState.mlvl || 0}% • #${deviceState.mtrig || 0}`;
+    }
+    if ($('dongleMicBar')) {
+      $('dongleMicBar').style.width = `${Math.min(100, deviceState.mlvl || 0)}%`;
+    }
+    if ($('dongleMicMarker')) {
+      $('dongleMicMarker').style.left = `${deviceState.mthr || 45}%`;
+    }
 
     if (syncInputs) {
+      if ($('selMicMode') && document.activeElement !== $('selMicMode')) {
+        $('selMicMode').value = String(deviceState.mic ?? 1);
+      }
+      if ($('rangeMicThreshold') && document.activeElement !== $('rangeMicThreshold')) {
+        $('rangeMicThreshold').value = String(deviceState.mthr ?? 45);
+        if ($('lblMicThreshold')) $('lblMicThreshold').textContent = `Auslöse-Schwelle: ${deviceState.mthr ?? 45}%`;
+      }
+      if ($('selMicBossAction') && document.activeElement !== $('selMicBossAction')) {
+        $('selMicBossAction').value = String(deviceState.mboss ?? 0);
+      }
       if (document.activeElement !== $('selJiggleMode')) {
         $('selJiggleMode').value = String(deviceState.mode);
       }
@@ -248,12 +283,21 @@
   function applyStatJson(jsonStr, logIt = false) {
     try {
       const obj = JSON.parse(jsonStr);
+      // Falls ältere Firmware noch kein "hw"-Feld sendet, anhand des "mic"-Felds erkennen
+      if (!obj.hw) {
+        obj.hw = typeof obj.mic === 'number' ? 'XIAO' : 'S3';
+      }
+      const hwChanged = obj.hw !== deviceState.hw;
       const changed =
+        hwChanged ||
         obj.j !== deviceState.j ||
         obj.lay !== deviceState.lay ||
         obj.stealth !== deviceState.stealth ||
         obj.rnd !== deviceState.rnd;
       deviceState = { ...deviceState, ...obj };
+      if (hwChanged) {
+        updateConnectionUi();
+      }
       updateStatusPills(changed);
       if (logIt) addLog('RX', `STAT ${jsonStr}`);
     } catch (_) {}
@@ -361,12 +405,13 @@
       updateConnectionUi();
       requestScreenWakeLock();
       haptic(25);
-      showToast('Mit T-Dongle S3 verbunden!');
 
       dongleSnippets = [];
       await sendCommand('SYS STATUS');
       await readStatusFromDongle(true, true);
+      updateConnectionUi();
       updateStatusPills(true);
+      showToast(deviceState.hw === 'XIAO' ? 'Mit XIAO nRF52840 Sense verbunden!' : 'Mit T-Dongle S3 verbunden!');
       await sendCommand('SNIP LIST');
 
       // Jede Sekunde Status vom Dongle lesen, damit Countdown & Zähler live laufen
@@ -1026,9 +1071,33 @@
       const auto = $('chkJiggleAuto').checked ? 1 : 0;
       haptic(18);
       await sendCommand(`JCFG ${minS} ${maxS} ${mode} ${auto}`);
-      showToast('Jiggler-Konfiguration im NVS gespeichert');
+      showToast('Jiggler-Konfiguration im Flash gespeichert');
       await readStatusFromDongle(false, true);
     });
+
+    if ($('rangeMicThreshold')) {
+      $('rangeMicThreshold').addEventListener('input', () => {
+        const v = parseInt($('rangeMicThreshold').value, 10) || 45;
+        if ($('lblMicThreshold')) $('lblMicThreshold').textContent = `Auslöse-Schwelle: ${v}%`;
+        if ($('dongleMicMarker')) $('dongleMicMarker').style.left = `${v}%`;
+      });
+    }
+
+    if ($('btnSaveMicCfg')) {
+      $('btnSaveMicCfg').addEventListener('click', async () => {
+        const mode = parseInt($('selMicMode').value, 10) || 0;
+        const thr = parseInt($('rangeMicThreshold').value, 10) || 45;
+        const boss = parseInt($('selMicBossAction').value, 10) || 0;
+        haptic(18);
+        deviceState.mic = mode;
+        deviceState.mthr = thr;
+        deviceState.mboss = boss;
+        updateStatusPills(false);
+        await sendCommand(`MIC CFG ${mode} ${thr} ${boss}`);
+        showToast(mode === 2 ? '🛡️ Boss-Key Wächter in 3 Sek. scharf!' : 'Mikrofon-Konfiguration gespeichert');
+        await readStatusFromDongle(false, true);
+      });
+    }
 
     $('btnSaveKeyboardCfg').addEventListener('click', async () => {
       const lay = $('selLayout').value;

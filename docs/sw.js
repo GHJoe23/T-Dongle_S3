@@ -1,4 +1,4 @@
-const CACHE_NAME = 'tdongle-k400-v12';
+const CACHE_NAME = 'tdongle-k400-v13';
 const ASSETS = [
   './',
   './index.html',

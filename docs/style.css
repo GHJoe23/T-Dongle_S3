@@ -170,7 +170,7 @@ input, textarea, select {
 
 /* Main Content */
 .app-main {
-  padding: 14px 14px calc(86px + var(--safe-bottom));
+  padding: 14px 14px calc(96px + var(--safe-bottom));
   max-width: 680px;
   margin: 0 auto;
 }
@@ -219,7 +219,7 @@ input, textarea, select {
 }
 
 /* Form Elements */
-textarea, input[type="text"], input[type="number"], select {
+textarea, input[type="text"], input[type="number"], input[type="password"], select {
   width: 100%;
   background: #0B0E14;
   border: 1px solid var(--border);
@@ -545,8 +545,8 @@ textarea {
   backdrop-filter: blur(14px);
   border-top: 1px solid var(--border);
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  padding: 6px 8px calc(6px + var(--safe-bottom));
+  grid-template-columns: repeat(5, 1fr);
+  padding: 5px 4px calc(5px + var(--safe-bottom));
   max-width: 680px;
   margin: 0 auto;
 }
@@ -555,20 +555,21 @@ textarea {
   background: none;
   border: none;
   color: var(--text-muted);
-  padding: 7px 4px;
-  border-radius: 12px;
-  font-size: 0.72rem;
+  padding: 6px 2px;
+  border-radius: 10px;
+  font-size: 0.68rem;
   font-weight: 600;
+  white-space: nowrap;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 4px;
+  gap: 3px;
   cursor: pointer;
 }
 
 .nav-item svg {
-  width: 22px;
-  height: 22px;
+  width: 20px;
+  height: 20px;
 }
 
 .nav-item.active {

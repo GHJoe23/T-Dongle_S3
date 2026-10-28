@@ -1345,18 +1345,23 @@
 
   function dispatchVadAudioSegment(chunksToProcess) {
     if (!chunksToProcess || chunksToProcess.length === 0) return;
+    let totalSamples = 0;
+    for (const c of chunksToProcess) totalSamples += c.length;
+    const durSec = (totalSamples / 16000).toFixed(1);
+
     const wavB64 = encodeWavBase64(chunksToProcess, 16000);
     const apiKey = geminiCfg.apiKey.trim();
-    const model = getSelectedGeminiModel();
+    const primaryModel = getSelectedGeminiModel();
     const sysPrompt = buildSystemInstruction();
 
     pendingGeminiTasks++;
     setVoiceStatus(`Gemini (${pendingGeminiTasks})…`);
+    setVoiceInterim(`⚡ Sende ${durSec}s Audio an Gemini (${primaryModel})…`);
 
     voiceQueue = voiceQueue
       .then(async () => {
-        try {
-          const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+        const callGeminiAudio = async (mdl) => {
+          const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(mdl)}:generateContent?key=${encodeURIComponent(apiKey)}`;
           const body = {
             systemInstruction: {
               parts: [{ text: sysPrompt }]
@@ -1372,13 +1377,13 @@
                     }
                   },
                   {
-                    text: 'Transkribiere dieses Audiosegment gemäß System-Anweisung.'
+                    text: 'Transkribiere dieses Audiosegment exakt gemäß System-Anweisung.'
                   }
                 ]
               }
             ],
             generationConfig: {
-              temperature: 0.15
+              temperature: 0.1
             }
           };
 
@@ -1393,8 +1398,23 @@
             const errMsg = (errJson.error && errJson.error.message) || `HTTP ${resp.status}`;
             throw new Error(errMsg);
           }
+          return resp.json();
+        };
 
-          const data = await resp.json();
+        try {
+          let data;
+          try {
+            data = await callGeminiAudio(primaryModel);
+          } catch (firstErr) {
+            // Automatischer Fallback auf gemini-2.5-flash, falls ein Spezialmodell kein Audio-Input akzeptiert
+            if (primaryModel !== 'gemini-2.5-flash') {
+              addLog('RX', `Fallback von ${primaryModel} auf gemini-2.5-flash (${firstErr.message})`);
+              data = await callGeminiAudio('gemini-2.5-flash');
+            } else {
+              throw firstErr;
+            }
+          }
+
           const cand = data.candidates && data.candidates[0];
           const parts = cand && cand.content && cand.content.parts;
           const text = parts ? parts.map((p) => p.text || '').join('').trim() : '';
@@ -1402,12 +1422,13 @@
           if (text) {
             await handleRecognizedVoiceSegment(text);
           } else if (voiceActive) {
-            setVoiceInterim('🎙️ Bereit – spreche weiter…');
+            setVoiceInterim('🎙️ Keine Sprache im Abschnitt erkannt – sprich weiter…');
           }
         } catch (err) {
           addLog('ERR', `Gemini: ${err.message || err}`);
           showToast(`Gemini-Fehler: ${err.message || err}`);
           setVoiceStatus('API-Fehler', true);
+          setVoiceInterim(`❌ Fehler: ${err.message || err}`);
         } finally {
           pendingGeminiTasks = Math.max(0, pendingGeminiTasks - 1);
           if (pendingGeminiTasks === 0) {
@@ -1421,7 +1442,7 @@
   }
 
   function flushCurrentVadSegment() {
-    if (vadActiveChunks.length > 0 && vadActiveSampleCount > 2400) {
+    if (vadActiveChunks.length > 0 && vadActiveSampleCount > 1600) {
       const copy = vadActiveChunks;
       vadActiveChunks = [];
       vadActiveSampleCount = 0;
@@ -1434,24 +1455,44 @@
     }
   }
 
-  // WebSocket Live API (BidiGenerateContent) Verbindung
+  // WebSocket Live API (BidiGenerateContent) Verbindung mit sauberem Timeout/Reject
   function startLiveWebSocket(apiKey, model) {
     return new Promise((resolve, reject) => {
       const wsUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${encodeURIComponent(apiKey)}`;
       const ws = new WebSocket(wsUrl);
-      let setupDone = false;
+      let settled = false;
+
+      const finishResolve = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeoutId);
+        resolve(ws);
+      };
+
+      const finishReject = (err) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeoutId);
+        try { ws.close(); } catch (_) {}
+        reject(err);
+      };
+
+      const timeoutId = setTimeout(() => {
+        finishReject(new Error(`Modell "${model}" antwortet nicht auf Bidi-WebSocket`));
+      }, 2600);
 
       ws.onopen = () => {
+        const isNativeAudio = model.includes('native-audio');
         const setupMsg = {
           setup: {
             model: `models/${model}`,
             generationConfig: {
-              responseModalities: ['AUDIO']
+              responseModalities: isNativeAudio ? ['AUDIO'] : ['TEXT']
             },
             systemInstruction: {
               parts: [{ text: buildSystemInstruction() }]
             },
-            inputAudioTranscription: {}
+            ...(isNativeAudio ? { inputAudioTranscription: {} } : {})
           }
         };
         ws.send(JSON.stringify(setupMsg));
@@ -1470,9 +1511,13 @@
           if (!rawStr) return;
           const msg = JSON.parse(rawStr);
 
-          if (msg.setupComplete !== undefined && !setupDone) {
-            setupDone = true;
-            resolve(ws);
+          if (msg.setupComplete !== undefined && !settled) {
+            finishResolve();
+            return;
+          }
+
+          if (msg.error) {
+            finishReject(new Error(msg.error.message || 'Live-WS Fehler'));
             return;
           }
 
@@ -1488,24 +1533,23 @@
         } catch (_) {}
       };
 
-      ws.onerror = (err) => {
-        if (!setupDone) reject(new Error('Live-WebSocket konnte nicht geöffnet werden'));
+      ws.onerror = () => {
+        finishReject(new Error('Live-WebSocket Verbindungsfehler'));
       };
 
       ws.onclose = (ev) => {
+        if (!settled) {
+          finishReject(new Error(`Code ${ev.code}${ev.reason ? ': ' + ev.reason : ' (Modell unterstützt kein Live-WS)'}`));
+          return;
+        }
         if (voiceActive && geminiCfg.engine === 'live_ws') {
-          addLog('ERR', `Live-WS geschlossen (Code ${ev.code}: ${ev.reason || 'unbekannt'})`);
-          showToast('Live-WS beendet – Tipp: Smart-Live-Stream unterstützt alle Modelle!');
-          stopVoiceDictation();
+          addLog('RX', `Live-WS beendet (${ev.code}) -> schalte um auf Smart-Live-Stream`);
+          geminiCfg.engine = 'smart_vad';
+          $('selVoiceEngine').value = 'smart_vad';
+          saveGeminiCfg();
+          showToast('Auf Smart-Live-Stream umgeschaltet (läuft weiter!)');
         }
       };
-
-      setTimeout(() => {
-        if (!setupDone && ws.readyState === WebSocket.OPEN) {
-          setupDone = true;
-          resolve(ws);
-        }
-      }, 1500);
     });
   }
 
@@ -1519,6 +1563,7 @@
 
     try {
       setVoiceStatus('Starte Mikrofon…');
+      setVoiceInterim('🎙️ Öffne Mikrofon auf dem Pixel…');
       mediaStream = await navigator.mediaDevices.getUserMedia({
         audio: {
           channelCount: 1,
@@ -1530,11 +1575,24 @@
 
       const AudioCtx = window.AudioContext || window.webkitAudioContext;
       audioCtx = new AudioCtx();
+      if (audioCtx.state === 'suspended') {
+        await audioCtx.resume();
+      }
       const inputRate = audioCtx.sampleRate || 48000;
 
       if (geminiCfg.engine === 'live_ws') {
         setVoiceStatus('Verbinde Live-WS…');
-        liveWs = await startLiveWebSocket(geminiCfg.apiKey.trim(), getSelectedGeminiModel());
+        try {
+          liveWs = await startLiveWebSocket(geminiCfg.apiKey.trim(), getSelectedGeminiModel());
+        } catch (wsErr) {
+          // Automatischer nahtloser Fallback auf Smart-Live-Stream, damit das Diktat IMMER sofort funktioniert!
+          addLog('RX', `Live-WS (${wsErr.message}) -> Auto-Fallback auf Smart-Live-Stream`);
+          geminiCfg.engine = 'smart_vad';
+          $('selVoiceEngine').value = 'smart_vad';
+          saveGeminiCfg();
+          liveWs = null;
+          showToast('Nutze Smart-Live-Stream (kompatibel mit deinem Modell)');
+        }
       }
 
       const source = audioCtx.createMediaStreamSource(mediaStream);
@@ -1553,30 +1611,30 @@
       $('voiceMicIcon').textContent = '⏹️';
       $('voiceBtnLabel').textContent = 'Diktat stoppen (läuft live)';
       setVoiceStatus('Hört zu…');
-      setVoiceInterim('🎙️ Mikrofon aktiv – sprich einfach los…');
+      setVoiceInterim('🎙️ Mikrofon aktiv – sprich einfach los (kurze Pause sendet Satz)…');
       haptic(25);
 
       scriptNode.onaudioprocess = (audioEvt) => {
         if (!voiceActive) return;
         const inputBuf = audioEvt.inputBuffer.getChannelData(0);
 
-        // RMS-Pegel berechnen
+        // RMS-Pegel berechnen (höhere Empfindlichkeit für Android Voice-DSP)
         let sumSq = 0;
         for (let i = 0; i < inputBuf.length; i++) {
           sumSq += inputBuf[i] * inputBuf[i];
         }
         const rms = Math.sqrt(sumSq / inputBuf.length);
-        const pct = Math.min(100, Math.round(Math.pow(rms * 9, 0.75) * 100));
+        const pct = Math.min(100, Math.round(Math.pow(rms * 18, 0.72) * 100));
         const bar = $('voiceLevelBar');
         if (bar) bar.style.width = `${pct}%`;
 
         const pcm16 = downsampleTo16kPcm(inputBuf, inputRate);
         const now = performance.now();
 
-        if (geminiCfg.engine === 'live_ws') {
+        if (geminiCfg.engine === 'live_ws' && liveWs && liveWs.readyState === WebSocket.OPEN) {
           wsChunkAccum.push(pcm16);
           wsChunkSamples += pcm16.length;
-          if (wsChunkSamples >= 3200 && liveWs && liveWs.readyState === WebSocket.OPEN) {
+          if (wsChunkSamples >= 3200) {
             const b64 = encodePcmBase64(wsChunkAccum);
             wsChunkAccum = [];
             wsChunkSamples = 0;
@@ -1597,25 +1655,26 @@
         }
 
         // Engine: smart_vad (Continuous PCM VAD mit 350ms Pre-Roll Ringbuffer)
-        const speechThreshold = 0.013;
+        const speechThreshold = 0.0038;
         if (rms >= speechThreshold) {
           if (!vadSpeaking) {
             vadSpeaking = true;
             vadSegmentStartAt = now;
-            // Pre-Roll übernehmen, damit die erste Silbe nie abgeschnitten wird
             for (const pr of preRollChunks) {
               vadActiveChunks.push(pr);
               vadActiveSampleCount += pr.length;
             }
             preRollChunks = [];
-            setVoiceInterim('🗣️ Sprache erkannt – zeichne Satz auf…');
           }
           vadLastVoiceAt = now;
           vadActiveChunks.push(pcm16);
           vadActiveSampleCount += pcm16.length;
 
-          // Sicherheits-Flush nach 13 Sekunden ununterbrochenem Reden
-          if (now - vadSegmentStartAt >= 13000) {
+          const sec = ((now - vadSegmentStartAt) / 1000).toFixed(1);
+          setVoiceInterim(`🗣️ Nehme Sprache auf (${sec}s) – kurz pausieren zum Senden…`);
+
+          // Auto-Flush nach 6 Sekunden durchgehendem Sprechen
+          if (now - vadSegmentStartAt >= 6000) {
             flushCurrentVadSegment();
           }
         } else {
@@ -1623,7 +1682,6 @@
             vadActiveChunks.push(pcm16);
             vadActiveSampleCount += pcm16.length;
             if (now - vadLastVoiceAt >= geminiCfg.vadSilenceMs) {
-              setVoiceInterim('⚡ Sende Satz an Gemini…');
               flushCurrentVadSegment();
             }
           } else {
@@ -1696,6 +1754,15 @@
   function applyGeminiCfgToUi() {
     $('inpGeminiKey').value = geminiCfg.apiKey || '';
     $('selVoiceEngine').value = geminiCfg.engine || 'smart_vad';
+    if (
+      geminiCfg.model &&
+      (geminiCfg.model.includes('-tts') ||
+        geminiCfg.model.includes('image') ||
+        geminiCfg.model.includes('embedding') ||
+        geminiCfg.model.includes('robotics'))
+    ) {
+      geminiCfg.model = 'gemini-2.5-flash';
+    }
     if (geminiCfg.model) {
       const sel = $('selGeminiModel');
       if (!Array.from(sel.options).some((o) => o.value === geminiCfg.model)) {
@@ -1743,35 +1810,65 @@
         throw new Error((err.error && err.error.message) || `HTTP ${resp.status}`);
       }
       const data = await resp.json();
-      const models = (data.models || [])
+      const rawModels = (data.models || [])
         .filter((m) => Array.isArray(m.supportedGenerationMethods) &&
           (m.supportedGenerationMethods.includes('generateContent') ||
            m.supportedGenerationMethods.includes('bidiGenerateContent')))
-        .map((m) => m.name.replace(/^models\//, ''))
-        .filter((name) => name.startsWith('gemini-'));
+        .map((m) => ({
+          id: m.name.replace(/^models\//, ''),
+          hasBidi: m.supportedGenerationMethods.includes('bidiGenerateContent'),
+          hasGen: m.supportedGenerationMethods.includes('generateContent')
+        }))
+        .filter((m) =>
+          m.id.startsWith('gemini-') &&
+          !m.id.includes('-tts') &&
+          !m.id.includes('image') &&
+          !m.id.includes('embedding') &&
+          !m.id.includes('vision') &&
+          !m.id.includes('robotics')
+        );
 
-      if (models.length > 0) {
+      if (rawModels.length > 0) {
+        const preferredOrder = [
+          'gemini-2.5-flash',
+          'gemini-2.5-flash-lite',
+          'gemini-2.5-pro',
+          'gemini-2.0-flash',
+          'gemini-2.0-flash-exp'
+        ];
+        rawModels.sort((a, b) => {
+          const ia = preferredOrder.indexOf(a.id);
+          const ib = preferredOrder.indexOf(b.id);
+          if (ia >= 0 && ib >= 0) return ia - ib;
+          if (ia >= 0) return -1;
+          if (ib >= 0) return 1;
+          return b.id.localeCompare(a.id);
+        });
+
         const sel = $('selGeminiModel');
         const current = sel.value;
         sel.innerHTML = '';
-        // Sortiere neueste Flash/Pro Modelle nach oben
-        models.sort((a, b) => b.localeCompare(a));
-        models.forEach((m) => {
+        rawModels.forEach((m) => {
           const opt = document.createElement('option');
-          opt.value = m;
-          opt.textContent = m;
+          opt.value = m.id;
+          const tag = m.hasBidi ? ' [Live-WS + Stream]' : ' [Smart-Stream]';
+          opt.textContent = `${m.id}${tag}`;
           sel.appendChild(opt);
         });
-        if (models.includes(current)) {
+
+        const ids = rawModels.map((x) => x.id);
+        if (ids.includes(current)) {
           sel.value = current;
-        } else if (models.includes('gemini-2.5-flash')) {
+        } else if (ids.includes('gemini-2.5-flash')) {
           sel.value = 'gemini-2.5-flash';
+        } else {
+          sel.value = rawModels[0].id;
         }
         syncGeminiCfgFromUi();
       }
-      $('geminiKeyBadge').textContent = `Aktiv ✓ (${models.length} Modelle)`;
+      $('geminiKeyBadge').textContent = `Aktiv ✓ (${rawModels.length} Audio-Modelle)`;
       $('geminiKeyBadge').style.color = 'var(--primary)';
-      showToast(`API-Key gültig! ${models.length} Gemini-Modelle geladen.`);
+      showToast(`API-Key gültig! ${rawModels.length} passende Gemini-Modelle geladen.`);
     } catch (err) {
       $('geminiKeyBadge').textContent = 'Key ungültig';
       $('geminiKeyBadge').style.color = 'var(--danger)';

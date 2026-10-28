@@ -9,7 +9,7 @@
   <title>LogiControl K400+ • T-Dongle S3</title>
   <link rel="manifest" href="./manifest.json">
   <link rel="icon" type="image/svg+xml" href="./icon.svg">
-  <link rel="stylesheet" href="./style.css?v=8">
+  <link rel="stylesheet" href="./style.css?v=9">
 </head>
 <body>
 
@@ -163,8 +163,8 @@
             <div class="voice-gate-marker" id="voiceGateMarker" style="left: 28%;"></div>
           </div>
           <div style="width:100%; display:flex; align-items:center; gap:8px; margin-top:2px;">
-            <span style="font-size:0.72rem; color:var(--text-muted); white-space:nowrap;" id="lblNoiseGate">Noise-Gate (Störfilter): Mittel</span>
-            <input type="range" id="rangeNoiseGate" min="5" max="45" step="2" value="15" style="flex:1; accent-color:var(--danger);">
+            <span style="font-size:0.72rem; color:var(--text-muted); white-space:nowrap;" id="lblNoiseGate">Noise-Gate: Streng (42%)</span>
+            <input type="range" id="rangeNoiseGate" min="10" max="85" step="2" value="42" style="flex:1; accent-color:var(--danger);">
           </div>
           <div class="voice-interim" id="voiceInterimLine">Mikrofon auf dem Pixel antippen und einfach lossprechen…</div>
           <div style="font-size:0.7rem; color:var(--text-muted); border-top:1px solid rgba(255,255,255,0.06); width:100%; padding-top:6px; text-align:center;" id="voiceUsageStats">
@@ -637,6 +637,6 @@
     </button>
   </nav>
 
-  <script src="./app.js?v=8"></script>
+  <script src="./app.js?v=9"></script>
 </body>
 </html>

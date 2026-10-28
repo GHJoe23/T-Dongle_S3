@@ -1699,7 +1699,8 @@
           sumSq += inputBuf[i] * inputBuf[i];
         }
         const rms = Math.sqrt(sumSq / inputBuf.length);
-        const pct = Math.min(100, Math.round(Math.pow(rms * 14, 0.72) * 100));
+        // Kalibrierte Pegel-Skala für Pixel 10 Pro XL (normale Stimme bei ~50-75% statt Anschlag)
+        const pct = Math.min(100, Math.round(Math.pow(rms * 6.2, 0.78) * 100));
         const bar = $('voiceLevelBar');
         if (bar) bar.style.width = `${pct}%`;
 
@@ -1816,19 +1817,17 @@
   }
 
   function updateNoiseGateUi() {
-    const val = parseInt($('rangeNoiseGate').value, 10) || 15;
-    // Mappe Slider (5..45) auf visuelle Balken-Prozent (12%..68%)
-    const gatePct = Math.min(75, Math.max(10, Math.round(val * 1.65)));
+    const gatePct = Math.min(88, Math.max(8, parseInt($('rangeNoiseGate').value, 10) || 42));
     geminiCfg.noiseGatePct = gatePct;
     const marker = $('voiceGateMarker');
     if (marker) marker.style.left = `${gatePct}%`;
 
     let desc = 'Mittel';
-    if (val <= 9) desc = 'Empfindlich (Leise)';
-    else if (val <= 18) desc = 'Normal (${gatePct}%)';
-    else if (val <= 28) desc = 'Streng (Filtert Geräusche)';
-    else desc = 'Sehr streng (Nur laute Stimme)';
-    $('lblNoiseGate').textContent = `Noise-Gate: ${desc.replace('${gatePct}', gatePct)}`;
+    if (gatePct <= 22) desc = `Empfindlich (${gatePct}%)`;
+    else if (gatePct <= 40) desc = `Normal (${gatePct}%)`;
+    else if (gatePct <= 60) desc = `Streng (${gatePct}%)`;
+    else desc = `Sehr streng (${gatePct}%)`;
+    $('lblNoiseGate').textContent = `Noise-Gate: ${desc}`;
   }
 
   function syncGeminiCfgFromUi() {
@@ -1851,9 +1850,9 @@
     const verMatch = id.match(/gemini-(\d+(?:\.\d+)?)/);
     const verNum = verMatch ? parseFloat(verMatch[1]) * 100 : 100;
     let bonus = 0;
-    if (id.includes('flash-lite') || id.includes('-lite')) bonus += 35;
-    else if (id.includes('flash')) bonus += 25;
-    else if (id.includes('pro')) bonus += 10;
+    if (id.includes('flash') && !id.includes('lite')) bonus += 35;
+    else if (id.includes('flash-lite') || id.includes('-lite')) bonus += 30;
+    else if (id.includes('pro')) bonus += 15;
     if (id.includes('exp') || id.includes('customtools')) bonus -= 15;
     return verNum + bonus;
   }
@@ -1903,7 +1902,7 @@
     $('rangeVadSilence').value = String(geminiCfg.vadSilenceMs || 800);
     $('lblVadSilence').textContent = `Sprechpause: ${((geminiCfg.vadSilenceMs || 800) / 1000).toFixed(1)}s`;
 
-    const sliderVal = Math.max(5, Math.min(45, Math.round((geminiCfg.noiseGatePct || 28) / 1.65)));
+    const sliderVal = Math.max(10, Math.min(85, Math.round(geminiCfg.noiseGatePct || 42)));
     $('rangeNoiseGate').value = String(sliderVal);
     updateNoiseGateUi();
     updateVoiceOutputModeUi();

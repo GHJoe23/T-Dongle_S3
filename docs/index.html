@@ -9,7 +9,7 @@
   <title>LogiControl K400+ • T-Dongle S3</title>
   <link rel="manifest" href="./manifest.json">
   <link rel="icon" type="image/svg+xml" href="./icon.svg">
-  <link rel="stylesheet" href="./style.css?v=10">
+  <link rel="stylesheet" href="./style.css?v=11">
 </head>
 <body>
 
@@ -160,11 +160,11 @@
           </button>
           <div class="voice-meter-wrap" title="Roter Strich = Noise-Gate-Schwelle (erst darüber startet die Sprachaufnahme)">
             <div class="voice-meter-bar" id="voiceLevelBar"></div>
-            <div class="voice-gate-marker" id="voiceGateMarker" style="left: 28%;"></div>
+            <div class="voice-gate-marker" id="voiceGateMarker" style="left: 24%;"></div>
           </div>
           <div style="width:100%; display:flex; align-items:center; gap:8px; margin-top:2px;">
-            <span style="font-size:0.72rem; color:var(--text-muted); white-space:nowrap;" id="lblNoiseGate">Noise-Gate: Streng (42%)</span>
-            <input type="range" id="rangeNoiseGate" min="10" max="85" step="2" value="42" style="flex:1; accent-color:var(--danger);">
+            <span style="font-size:0.72rem; color:var(--text-muted); white-space:nowrap;" id="lblNoiseGate">Noise-Gate: Normal (24%)</span>
+            <input type="range" id="rangeNoiseGate" min="8" max="65" step="2" value="24" style="flex:1; accent-color:var(--danger);">
           </div>
           <div class="voice-interim" id="voiceInterimLine">Mikrofon auf dem Pixel antippen und einfach lossprechen…</div>
           <div style="font-size:0.7rem; color:var(--text-muted); border-top:1px solid rgba(255,255,255,0.06); width:100%; padding-top:6px; text-align:center;" id="voiceUsageStats">
@@ -241,11 +241,10 @@
 
         <div class="form-row">
           <div>
-            <label class="field-label">Streaming-Engine</label>
+            <label class="field-label">Diktat-Modus</label>
             <select id="selVoiceEngine">
-              <option value="smart_vad">1. Smart-Satz-Diktat (Satzweise bei Pause – beste Glättung)</option>
-              <option value="turbo_chunk">2. Turbo-Live-Chunks (Alle ~2s beim Reden – für 3.5/3.8)</option>
-              <option value="live_ws">3. WebSocket Live-API (Wort-für-Wort – nur [Live-WS] Modelle)</option>
+              <option value="smart_vad">Smart-Satz-Diktat (Stabil &amp; Präzise)</option>
+              <option value="fast_vad">Schneller Satz-Modus (Kurze Pausen)</option>
             </select>
           </div>
           <div>
@@ -638,6 +637,6 @@
     </button>
   </nav>
 
-  <script src="./app.js?v=10"></script>
+  <script src="./app.js?v=11"></script>
 </body>
 </html>

@@ -1395,7 +1395,8 @@
     if (geminiCfg.outputMode === 'live') {
       if (isConnected()) {
         const escaped = escapeForWire(finalOut);
-        await sendCommand(`T ${escaped}`);
+        // Nicht die Gemini-Empfangswarteschlange blockieren -> direkt in die BLE-GATT-Queue einreihen
+        sendCommand(`T ${escaped}`);
       } else {
         showToast('Im Textfeld erfasst (Dongle nicht per BLE verbunden)');
       }
@@ -1404,6 +1405,12 @@
 
   function dispatchVadAudioSegment(chunksToProcess) {
     if (!chunksToProcess || chunksToProcess.length === 0) return;
+    // Schutz gegen Rückstau: maximal 2 parallele/wartende Audio-Requests zulassen
+    if (pendingGeminiTasks >= 2) {
+      addLog('RX', 'Überspringe Zwischen-Segment (Gemini verarbeitet noch vorherigen Satz)');
+      return;
+    }
+
     let totalSamples = 0;
     for (const c of chunksToProcess) totalSamples += c.length;
     const durNum = totalSamples / 16000;
@@ -1418,100 +1425,92 @@
     setVoiceStatus(`Gemini (${pendingGeminiTasks})…`);
     setVoiceInterim(`⚡ Sende ${durSec}s Sprache an ${primaryModel}…`);
 
-    voiceQueue = voiceQueue
-      .then(async () => {
-        const callGeminiAudio = async (mdl) => {
-          const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(mdl)}:generateContent?key=${encodeURIComponent(apiKey)}`;
-          const body = {
-            systemInstruction: {
-              parts: [{ text: sysPrompt }]
-            },
-            contents: [
-              {
-                role: 'user',
-                parts: [
-                  {
-                    inlineData: {
-                      mimeType: 'audio/wav',
-                      data: wavB64
-                    }
-                  },
-                  {
-                    text: 'Diktat-Audio verarbeiten gemäß System-Anweisung (bei Geräusch/Stille: [STILLE]).'
+    const runTask = async () => {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 9000);
+
+      try {
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(primaryModel)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+        const body = {
+          systemInstruction: {
+            parts: [{ text: sysPrompt }]
+          },
+          contents: [
+            {
+              role: 'user',
+              parts: [
+                {
+                  inlineData: {
+                    mimeType: 'audio/wav',
+                    data: wavB64
                   }
-                ]
-              }
-            ],
-            generationConfig: {
-              temperature: 0.1
+                },
+                {
+                  text: 'Diktat-Audio verarbeiten gemäß System-Anweisung (bei Geräusch/Stille: [STILLE]).'
+                }
+              ]
             }
-          };
-
-          const resp = await fetch(url, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(body)
-          });
-
-          if (!resp.ok) {
-            const errJson = await resp.json().catch(() => ({}));
-            const errMsg = (errJson.error && errJson.error.message) || `HTTP ${resp.status}`;
-            throw new Error(errMsg);
+          ],
+          generationConfig: {
+            temperature: 0.1
           }
-          return resp.json();
         };
 
-        try {
-          let data;
-          try {
-            data = await callGeminiAudio(primaryModel);
-          } catch (firstErr) {
-            const altModel = getFallback3xModel(primaryModel);
-            if (altModel) {
-              addLog('RX', `Fallback von ${primaryModel} auf ${altModel} (${firstErr.message})`);
-              data = await callGeminiAudio(altModel);
-            } else {
-              throw firstErr;
-            }
-          }
+        const resp = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+          signal: controller.signal
+        });
 
-          // Audio-Sekunden & geschätzte Tokens verbuchen (~32 Tokens/Sekunde Audio + Prompt/Output)
-          const usedTokens = data.usageMetadata?.totalTokenCount || Math.round(durNum * 32 + 95);
-          geminiCfg.totalAudioSec = (geminiCfg.totalAudioSec || 0) + durNum;
-          geminiCfg.totalTokens = (geminiCfg.totalTokens || 0) + usedTokens;
-          saveGeminiCfg();
-          updateUsageStatsUi();
-
-          const cand = data.candidates && data.candidates[0];
-          const parts = cand && cand.content && cand.content.parts;
-          const text = parts ? parts.map((p) => p.text || '').join('').trim() : '';
-
-          if (text) {
-            await handleRecognizedVoiceSegment(text);
-          } else if (voiceActive) {
-            setVoiceInterim('🎙️ Keine Sprache im Abschnitt erkannt – sprich weiter…');
-          }
-        } catch (err) {
-          addLog('ERR', `Gemini: ${err.message || err}`);
-          showToast(`Gemini-Fehler: ${err.message || err}`);
-          setVoiceStatus('API-Fehler', true);
-          setVoiceInterim(`❌ Fehler: ${err.message || err}`);
-        } finally {
-          pendingGeminiTasks = Math.max(0, pendingGeminiTasks - 1);
-          if (pendingGeminiTasks === 0) {
-            setVoiceStatus(voiceActive ? 'Hört zu…' : 'Bereit');
-          } else {
-            setVoiceStatus(`Gemini (${pendingGeminiTasks})…`);
-          }
+        if (!resp.ok) {
+          const errJson = await resp.json().catch(() => ({}));
+          const errMsg = (errJson.error && errJson.error.message) || `HTTP ${resp.status}`;
+          throw new Error(errMsg);
         }
-      })
-      .catch(() => {});
+
+        const data = await resp.json();
+
+        const usedTokens = data.usageMetadata?.totalTokenCount || Math.round(durNum * 32 + 95);
+        geminiCfg.totalAudioSec = (geminiCfg.totalAudioSec || 0) + durNum;
+        geminiCfg.totalTokens = (geminiCfg.totalTokens || 0) + usedTokens;
+        saveGeminiCfg();
+        updateUsageStatsUi();
+
+        const cand = data.candidates && data.candidates[0];
+        const parts = cand && cand.content && cand.content.parts;
+        const text = parts ? parts.map((p) => p.text || '').join('').trim() : '';
+
+        if (text) {
+          await handleRecognizedVoiceSegment(text);
+        } else if (voiceActive) {
+          setVoiceInterim('🎙️ Bereit – sprich weiter…');
+        }
+      } catch (err) {
+        const msg = err.name === 'AbortError' ? 'Zeitüberschreitung (9s) bei Gemini API' : (err.message || String(err));
+        addLog('ERR', `Gemini: ${msg}`);
+        showToast(`Gemini: ${msg}`);
+        setVoiceStatus('API-Fehler', true);
+        setVoiceInterim(`❌ ${msg}`);
+      } finally {
+        clearTimeout(timeoutId);
+        pendingGeminiTasks = Math.max(0, pendingGeminiTasks - 1);
+        if (pendingGeminiTasks === 0) {
+          setVoiceStatus(voiceActive ? 'Hört zu…' : 'Bereit');
+        } else {
+          setVoiceStatus(`Gemini (${pendingGeminiTasks})…`);
+        }
+      }
+    };
+
+    const next = voiceQueue.then(runTask, runTask);
+    voiceQueue = next.catch(() => {});
   }
 
   function flushCurrentVadSegment(forceEvenShort = false) {
-    // Mindestens 0.45 Sekunden echte Sprach-Samples über dem Noise-Gate (7200 Samples @ 16kHz),
-    // damit kurze Tippgeräusche, Atmen oder Knackser gar nicht erst an die API geschickt werden!
-    const minVoicedSamples = forceEvenShort ? 2400 : 7200;
+    // 0.22 Sekunden Mindest-Sprachanteil über dem Gate (3600 Samples @ 16kHz) filtert Knackser,
+    // lässt aber auch kurze Sätze und Kommandos zuverlässig durch!
+    const minVoicedSamples = forceEvenShort ? 1600 : 3600;
     if (vadActiveChunks.length > 0 && vadVoicedSampleCount >= minVoicedSamples) {
       const copy = vadActiveChunks;
       vadActiveChunks = [];
@@ -1521,7 +1520,7 @@
       dispatchVadAudioSegment(copy);
     } else {
       if (vadSpeaking && vadVoicedSampleCount > 0) {
-        setVoiceInterim('🔇 Kurzes Nebengeräusch (< 0.45s) ignoriert – spart API-Tokens…');
+        setVoiceInterim('🔇 Kurzes Nebengeräusch ignoriert – sprich weiter…');
       }
       vadActiveChunks = [];
       vadActiveSampleCount = 0;
@@ -1662,23 +1661,6 @@
       }
       const inputRate = audioCtx.sampleRate || 48000;
 
-      let activeSessionEngine = geminiCfg.engine;
-      if (activeSessionEngine === 'live_ws') {
-        const chosenModel = getSelectedGeminiModel();
-        setVoiceStatus('Verbinde Live-WS…');
-        try {
-          liveWs = await startLiveWebSocket(geminiCfg.apiKey.trim(), chosenModel);
-          showToast(`Live-WebSocket verbunden (${chosenModel}) ✓`);
-        } catch (wsErr) {
-          // Modell erlaubt bei Google kein Bidi-WebSocket -> nutze für diese Sitzung den schnellen 2s-Turbo-Chunk-Modus,
-          // OHNE das Dropdown des Nutzers heimlich zu verstellen!
-          addLog('RX', `Modell "${chosenModel}" lehnt WebSocket ab (${wsErr.message}) -> nutze 2s-Turbo-Chunks`);
-          activeSessionEngine = 'turbo_chunk';
-          liveWs = null;
-          showToast(`Hinweis: ${chosenModel} unterstützt kein WS -> nutze 2s-Turbo-Stream!`);
-        }
-      }
-
       const source = audioCtx.createMediaStreamSource(mediaStream);
       scriptNode = audioCtx.createScriptProcessor(4096, 1, 1);
 
@@ -1687,16 +1669,16 @@
       vadActiveSampleCount = 0;
       vadVoicedSampleCount = 0;
       vadSpeaking = false;
-      wsChunkAccum = [];
-      wsChunkSamples = 0;
+      pendingGeminiTasks = 0;
+      voiceQueue = Promise.resolve();
       voiceActive = true;
 
       $('btnVoiceToggle').classList.add('active');
       $('voiceCockpit').classList.add('recording');
       $('voiceMicIcon').textContent = '⏹️';
       $('voiceBtnLabel').textContent = 'Diktat stoppen (läuft live)';
-      setVoiceStatus(activeSessionEngine === 'live_ws' ? 'Live-WS aktiv' : activeSessionEngine === 'turbo_chunk' ? 'Turbo-Live…' : 'Hört zu…');
-      setVoiceInterim('🎙️ Mikrofon aktiv – sprich über den roten Strich im Pegelbalken…');
+      setVoiceStatus('Hört zu…');
+      setVoiceInterim('🎙️ Mikrofon aktiv – sprich ganz normal los…');
       haptic(25);
 
       scriptNode.onaudioprocess = (audioEvt) => {
@@ -1708,52 +1690,21 @@
           sumSq += inputBuf[i] * inputBuf[i];
         }
         const rms = Math.sqrt(sumSq / inputBuf.length);
-        // Kalibrierte Pegel-Skala für Pixel 10 Pro XL (normale Stimme bei ~50-75% statt Anschlag)
-        const pct = Math.min(100, Math.round(Math.pow(rms * 6.2, 0.78) * 100));
+        const pct = Math.min(100, Math.round(Math.pow(rms * 10.5, 0.75) * 100));
         const bar = $('voiceLevelBar');
         if (bar) bar.style.width = `${pct}%`;
 
         const pcm16 = downsampleTo16kPcm(inputBuf, inputRate);
         const now = performance.now();
 
-        if (activeSessionEngine === 'live_ws' && liveWs && liveWs.readyState === WebSocket.OPEN) {
-          // Nur senden wenn über Noise-Gate oder kurz nach Sprache (spart Tokens bei Stille)
-          const gatePct = geminiCfg.noiseGatePct || 42;
-          if (pct >= gatePct) {
-            vadLastVoiceAt = now;
-          }
-          if (pct >= gatePct || now - vadLastVoiceAt < 1200) {
-            wsChunkAccum.push(pcm16);
-            wsChunkSamples += pcm16.length;
-            if (wsChunkSamples >= 2400) {
-              const b64 = encodePcmBase64(wsChunkAccum);
-              const sentSec = wsChunkSamples / 16000;
-              wsChunkAccum = [];
-              wsChunkSamples = 0;
-              geminiCfg.totalAudioSec = (geminiCfg.totalAudioSec || 0) + sentSec;
-              geminiCfg.totalTokens = (geminiCfg.totalTokens || 0) + Math.round(sentSec * 32);
-              updateUsageStatsUi();
-              liveWs.send(
-                JSON.stringify({
-                  realtimeInput: {
-                    mediaChunks: [
-                      {
-                        mimeType: 'audio/pcm;rate=16000',
-                        data: b64
-                      }
-                    ]
-                  }
-                })
-              );
-            }
-          }
-          return;
-        }
+        // Hysterese-Noise-Gate:
+        // - Zum STARTEN eines neuen Satzes muss die Stimme über startGatePct (roter Strich) kommen.
+        // - Sobald der Satz läuft (vadSpeaking = true), hält holdGatePct (48% vom Strich) den Satz auch bei leisen Silben offen!
+        const startGatePct = geminiCfg.noiseGatePct || 24;
+        const holdGatePct = Math.max(8, Math.round(startGatePct * 0.48));
+        const activeThreshold = vadSpeaking ? holdGatePct : startGatePct;
 
-        // Engine: smart_vad (Satzweise) ODER turbo_chunk (Alle ~2.2s laufend während des Redens)
-        const isTurbo = activeSessionEngine === 'turbo_chunk';
-        const gatePct = geminiCfg.noiseGatePct || 42;
-        if (pct >= gatePct) {
+        if (pct >= activeThreshold) {
           if (!vadSpeaking) {
             vadSpeaking = true;
             vadSegmentStartAt = now;
@@ -1770,30 +1721,20 @@
           vadVoicedSampleCount += pcm16.length;
 
           const voicedSec = (vadVoicedSampleCount / 16000).toFixed(1);
-          setVoiceInterim(
-            isTurbo
-              ? `⚡ Turbo-Stream (${voicedSec}s) – sendet laufend beim Sprechen…`
-              : `🗣️ Sprache aktiv (${voicedSec}s über Gate) – kurz pausieren zum Senden…`
-          );
+          setVoiceInterim(`🗣️ Nehme Satz auf (${voicedSec}s) – kurze Pause sendet an Gemini…`);
 
-          // Im Turbo-Modus alle 2.8s (bzw. im Satz-Modus nach 7s) automatisch zwischensenden
-          const maxContinuousMs = isTurbo ? 2800 : 7000;
-          if (now - vadSegmentStartAt >= maxContinuousMs) {
-            flushCurrentVadSegment(isTurbo);
+          // Sicherheits-Flush nach 10 Sekunden durchgehendem Sprechen
+          if (now - vadSegmentStartAt >= 10000) {
+            flushCurrentVadSegment(false);
           }
         } else {
           if (vadSpeaking) {
             vadActiveChunks.push(pcm16);
             vadActiveSampleCount += pcm16.length;
-            // Im Turbo-Modus reicht schon eine Mini-Wortlücke von 220ms (ab 1.4s Redezeit) zum Live-Senden!
-            const silenceNeeded =
-              isTurbo && vadVoicedSampleCount >= 22000
-                ? 220
-                : isTurbo
-                ? 420
-                : geminiCfg.vadSilenceMs;
-            if (now - vadLastVoiceAt >= silenceNeeded) {
-              flushCurrentVadSegment(isTurbo);
+            const isFastMode = geminiCfg.engine === 'fast_vad';
+            const silenceWait = isFastMode ? Math.min(550, geminiCfg.vadSilenceMs) : geminiCfg.vadSilenceMs;
+            if (now - vadLastVoiceAt >= silenceWait) {
+              flushCurrentVadSegment(false);
             }
           } else {
             // Im Ruhezustand die letzten ~350ms als Pre-Roll im Ringpuffer behalten
@@ -1850,15 +1791,15 @@
   }
 
   function updateNoiseGateUi() {
-    const gatePct = Math.min(88, Math.max(8, parseInt($('rangeNoiseGate').value, 10) || 42));
+    const gatePct = Math.min(65, Math.max(8, parseInt($('rangeNoiseGate').value, 10) || 24));
     geminiCfg.noiseGatePct = gatePct;
     const marker = $('voiceGateMarker');
     if (marker) marker.style.left = `${gatePct}%`;
 
-    let desc = 'Mittel';
-    if (gatePct <= 22) desc = `Empfindlich (${gatePct}%)`;
-    else if (gatePct <= 40) desc = `Normal (${gatePct}%)`;
-    else if (gatePct <= 60) desc = `Streng (${gatePct}%)`;
+    let desc = 'Normal';
+    if (gatePct <= 16) desc = `Empfindlich (${gatePct}%)`;
+    else if (gatePct <= 30) desc = `Normal (${gatePct}%)`;
+    else if (gatePct <= 45) desc = `Streng (${gatePct}%)`;
     else desc = `Sehr streng (${gatePct}%)`;
     $('lblNoiseGate').textContent = `Noise-Gate: ${desc}`;
   }
@@ -1897,8 +1838,7 @@
     modelList.forEach((m) => {
       const opt = document.createElement('option');
       opt.value = m.id;
-      const tag = m.hasBidi ? ' [Live-WS + Stream]' : ' [Smart-Stream]';
-      opt.textContent = `${m.id}${tag}`;
+      opt.textContent = m.id;
       sel.appendChild(opt);
     });
     const ids = modelList.map((x) => x.id);
@@ -1912,6 +1852,9 @@
 
   function applyGeminiCfgToUi() {
     $('inpGeminiKey').value = geminiCfg.apiKey || '';
+    if (geminiCfg.engine !== 'smart_vad' && geminiCfg.engine !== 'fast_vad') {
+      geminiCfg.engine = 'smart_vad';
+    }
     $('selVoiceEngine').value = geminiCfg.engine || 'smart_vad';
 
     if (Array.isArray(geminiCfg.cachedModels) && geminiCfg.cachedModels.length > 0) {
@@ -1935,7 +1878,10 @@
     $('rangeVadSilence').value = String(geminiCfg.vadSilenceMs || 800);
     $('lblVadSilence').textContent = `Sprechpause: ${((geminiCfg.vadSilenceMs || 800) / 1000).toFixed(1)}s`;
 
-    const sliderVal = Math.max(10, Math.min(85, Math.round(geminiCfg.noiseGatePct || 42)));
+    if (!geminiCfg.noiseGatePct || geminiCfg.noiseGatePct > 36) {
+      geminiCfg.noiseGatePct = 24;
+    }
+    const sliderVal = Math.max(8, Math.min(65, Math.round(geminiCfg.noiseGatePct || 24)));
     $('rangeNoiseGate').value = String(sliderVal);
     updateNoiseGateUi();
     updateVoiceOutputModeUi();

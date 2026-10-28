@@ -346,6 +346,7 @@
         rxChar = null;
         txChar = null;
         updateConnectionUi();
+        releaseScreenWakeLock();
         showToast('BLE getrennt');
       });
 
@@ -358,6 +359,7 @@
       txChar.addEventListener('characteristicvaluechanged', onTxNotification);
 
       updateConnectionUi();
+      requestScreenWakeLock();
       haptic(25);
       showToast('Mit T-Dongle S3 verbunden!');
 
@@ -1126,6 +1128,7 @@
   let mediaStream = null;
   let scriptNode = null;
   let liveWs = null;
+  let wakeLockSentinel = null;
   let preRollChunks = [];
   let vadActiveChunks = [];
   let vadActiveSampleCount = 0;
@@ -1137,6 +1140,34 @@
   let wsChunkSamples = 0;
   let pendingGeminiTasks = 0;
   let voiceQueue = Promise.resolve();
+
+  // Hält das Display des Pixel 10 Pro XL während des Diktats / der Verbindung wach (kein Standby-Abbruch)
+  async function requestScreenWakeLock() {
+    if (!('wakeLock' in navigator)) return;
+    try {
+      if (!wakeLockSentinel) {
+        wakeLockSentinel = await navigator.wakeLock.request('screen');
+        wakeLockSentinel.addEventListener('release', () => {
+          wakeLockSentinel = null;
+        });
+      }
+    } catch (_) {}
+  }
+
+  async function releaseScreenWakeLock() {
+    if (wakeLockSentinel && !voiceActive && !isConnected()) {
+      try {
+        await wakeLockSentinel.release();
+      } catch (_) {}
+      wakeLockSentinel = null;
+    }
+  }
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && (voiceActive || isConnected())) {
+      requestScreenWakeLock();
+    }
+  });
 
   function loadGeminiCfg() {
     try {
@@ -1405,9 +1436,9 @@
 
   function dispatchVadAudioSegment(chunksToProcess) {
     if (!chunksToProcess || chunksToProcess.length === 0) return;
-    // Schutz gegen Rückstau: maximal 2 parallele/wartende Audio-Requests zulassen
-    if (pendingGeminiTasks >= 2) {
-      addLog('RX', 'Überspringe Zwischen-Segment (Gemini verarbeitet noch vorherigen Satz)');
+    // Maximal 3 gleichzeitige Requests im Mobilfunk-Flug erlauben
+    if (pendingGeminiTasks >= 3) {
+      addLog('RX', 'Überspringe Zwischen-Segment (3 Segmente noch unterwegs)');
       return;
     }
 
@@ -1425,51 +1456,79 @@
     setVoiceStatus(`Gemini (${pendingGeminiTasks})…`);
     setVoiceInterim(`⚡ Sende ${durSec}s Sprache an ${primaryModel}…`);
 
-    const runTask = async () => {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 9000);
-
-      try {
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(primaryModel)}:generateContent?key=${encodeURIComponent(apiKey)}`;
-        const body = {
-          systemInstruction: {
-            parts: [{ text: sysPrompt }]
-          },
-          contents: [
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(primaryModel)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+    const bodyStr = JSON.stringify({
+      systemInstruction: {
+        parts: [{ text: sysPrompt }]
+      },
+      contents: [
+        {
+          role: 'user',
+          parts: [
             {
-              role: 'user',
-              parts: [
-                {
-                  inlineData: {
-                    mimeType: 'audio/wav',
-                    data: wavB64
-                  }
-                },
-                {
-                  text: 'Diktat-Audio verarbeiten gemäß System-Anweisung (bei Geräusch/Stille: [STILLE]).'
-                }
-              ]
+              inlineData: {
+                mimeType: 'audio/wav',
+                data: wavB64
+              }
+            },
+            {
+              text: 'Diktat-Audio verarbeiten gemäß System-Anweisung (bei Geräusch/Stille: [STILLE]).'
             }
-          ],
-          generationConfig: {
-            temperature: 0.1
-          }
-        };
+          ]
+        }
+      ],
+      generationConfig: {
+        temperature: 0.1
+      }
+    });
 
+    // Einzelner Request-Versuch mit kurzem 6.5s Timeout (ideal gegen Funkzellen-Wechsel im Auto)
+    const fetchOnce = async (timeoutMs) => {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+      try {
         const resp = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body),
+          body: bodyStr,
           signal: controller.signal
         });
-
         if (!resp.ok) {
           const errJson = await resp.json().catch(() => ({}));
           const errMsg = (errJson.error && errJson.error.message) || `HTTP ${resp.status}`;
-          throw new Error(errMsg);
+          const httpErr = new Error(errMsg);
+          httpErr.status = resp.status;
+          throw httpErr;
         }
+        return await resp.json();
+      } finally {
+        clearTimeout(timeoutId);
+      }
+    };
 
-        const data = await resp.json();
+    // SOFORT parallel über das Mobilfunknetz absenden (blockiert nachfolgende Chunks nicht!)
+    const networkPromise = (async () => {
+      try {
+        return await fetchOnce(6500);
+      } catch (firstErr) {
+        // Bei Mobilfunk-Handover (Timeout / Netzwerkabbruch / 503) sofort 1x frisch wiederholen
+        const isTransient =
+          firstErr.name === 'AbortError' ||
+          firstErr instanceof TypeError ||
+          firstErr.status === 503 ||
+          firstErr.status === 429;
+        if (isTransient) {
+          addLog('RX', 'Mobilfunk-Hänger erkannt -> automatischer Sofort-Retry…');
+          return await fetchOnce(6500);
+        }
+        throw firstErr;
+      }
+    })();
+
+    // Nur die Textausgabe wird in Sprech-Reihenfolge eingereiht, während die Requests parallel laufen
+    const handleResult = async () => {
+      try {
+        const data = await networkPromise;
 
         const usedTokens = data.usageMetadata?.totalTokenCount || Math.round(durNum * 32 + 95);
         geminiCfg.totalAudioSec = (geminiCfg.totalAudioSec || 0) + durNum;
@@ -1487,13 +1546,12 @@
           setVoiceInterim('🎙️ Bereit – sprich weiter…');
         }
       } catch (err) {
-        const msg = err.name === 'AbortError' ? 'Zeitüberschreitung (9s) bei Gemini API' : (err.message || String(err));
+        const msg = err.name === 'AbortError' ? 'Mobilfunk-Timeout bei Gemini API' : (err.message || String(err));
         addLog('ERR', `Gemini: ${msg}`);
         showToast(`Gemini: ${msg}`);
         setVoiceStatus('API-Fehler', true);
         setVoiceInterim(`❌ ${msg}`);
       } finally {
-        clearTimeout(timeoutId);
         pendingGeminiTasks = Math.max(0, pendingGeminiTasks - 1);
         if (pendingGeminiTasks === 0) {
           setVoiceStatus(voiceActive ? 'Hört zu…' : 'Bereit');
@@ -1503,7 +1561,7 @@
       }
     };
 
-    const next = voiceQueue.then(runTask, runTask);
+    const next = voiceQueue.then(handleResult, handleResult);
     voiceQueue = next.catch(() => {});
   }
 
@@ -1672,13 +1730,14 @@
       pendingGeminiTasks = 0;
       voiceQueue = Promise.resolve();
       voiceActive = true;
+      requestScreenWakeLock();
 
       $('btnVoiceToggle').classList.add('active');
       $('voiceCockpit').classList.add('recording');
       $('voiceMicIcon').textContent = '⏹️';
-      $('voiceBtnLabel').textContent = 'Diktat stoppen (läuft live)';
+      $('voiceBtnLabel').textContent = 'Diktat stoppen (Display bleibt wach)';
       setVoiceStatus('Hört zu…');
-      setVoiceInterim('🎙️ Mikrofon aktiv – sprich ganz normal los…');
+      setVoiceInterim('🎙️ Mikrofon & Display-Wachhalter aktiv – sprich ganz normal los…');
       haptic(25);
 
       scriptNode.onaudioprocess = (audioEvt) => {
@@ -1788,6 +1847,7 @@
     if ($('voiceBtnLabel')) $('voiceBtnLabel').textContent = 'Live-Diktat starten';
     if ($('voiceLevelBar')) $('voiceLevelBar').style.width = '0%';
     if (pendingGeminiTasks === 0) setVoiceStatus('Bereit');
+    releaseScreenWakeLock();
   }
 
   function updateNoiseGateUi() {
@@ -2102,6 +2162,17 @@
         updateUsageStatsUi();
       }
     });
+
+    if ($('voiceStatusBadge')) {
+      $('voiceStatusBadge').addEventListener('click', () => {
+        if (pendingGeminiTasks > 0) {
+          pendingGeminiTasks = 0;
+          voiceQueue = Promise.resolve();
+          setVoiceStatus(voiceActive ? 'Hört zu…' : 'Bereit');
+          showToast('Warteschlange zurückgesetzt');
+        }
+      });
+    }
 
     $('btnToggleKeyVis').addEventListener('click', () => {
       const inp = $('inpGeminiKey');

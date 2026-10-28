@@ -9,7 +9,7 @@
   <title>LogiControl K400+ • T-Dongle S3</title>
   <link rel="manifest" href="./manifest.json">
   <link rel="icon" type="image/svg+xml" href="./icon.svg">
-  <link rel="stylesheet" href="./style.css?v=5">
+  <link rel="stylesheet" href="./style.css?v=6">
 </head>
 <body>
 
@@ -51,7 +51,10 @@
       <div class="card">
         <div class="card-header">
           <h2 class="card-title">⌨️ Direkt-Text &amp; Pausen-Steuerung</h2>
-          <span class="badge" id="charCountBadge">0 Zeichen</span>
+          <div style="display:flex; gap:6px; align-items:center;">
+            <button class="btn btn-sm btn-accent" id="btnJumpToVoice">🎙 Live-Diktat</button>
+            <span class="badge" id="charCountBadge">0 Zeichen</span>
+          </div>
         </div>
         <textarea id="liveTextInput" placeholder="Text hier eingeben... Nutze die Bausteine unten für Pausen z.B. {W:500} oder {TAB} zwischen Wörtern!"></textarea>
 
@@ -131,6 +134,135 @@
         </div>
         <div class="snippet-list" id="dongleSnippetList">
           <div style="font-size:0.8rem; color:var(--text-muted);">Mit Dongle verbinden, um die auf dem Stick gespeicherten Textmodule anzuzeigen.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB: GEMINI LIVE DIKTAT & SPRACHSTEUERUNG -->
+    <section class="tab-panel" id="tab-voice">
+      <div class="card">
+        <div class="card-header">
+          <h2 class="card-title">🎙️ Gemini Live-Diktat &amp; KI-Typer</h2>
+          <span class="badge" id="voiceStatusBadge">Bereit</span>
+        </div>
+
+        <!-- Mode Selector: Live Tippen vs Vorschau -->
+        <div class="btn-row" style="margin-bottom:10px;">
+          <button class="btn btn-primary btn-sm" id="btnVoiceModeLive" style="flex:1;">⚡ Sofort live am PC tippen</button>
+          <button class="btn btn-sm" id="btnVoiceModePreview" style="flex:1;">📝 Erst Vorschau im Feld</button>
+        </div>
+
+        <!-- Big Microphone Cockpit -->
+        <div class="voice-cockpit" id="voiceCockpit">
+          <button class="btn-mic-main" id="btnVoiceToggle" type="button">
+            <span class="mic-icon" id="voiceMicIcon">🎙️</span>
+            <span id="voiceBtnLabel">Live-Diktat starten</span>
+          </button>
+          <div class="voice-meter-wrap">
+            <div class="voice-meter-bar" id="voiceLevelBar"></div>
+          </div>
+          <div class="voice-interim" id="voiceInterimLine">Mikrofon auf dem Pixel antippen und einfach lossprechen…</div>
+        </div>
+
+        <!-- Quick Actions while speaking -->
+        <div class="chip-bar" style="margin-top:8px;">
+          <button class="chip" id="btnVoiceFlushNow">⚡ Abschnitt sofort senden</button>
+          <button class="chip" id="btnVoiceSendEnter">↵ Enter am PC</button>
+          <button class="chip" id="btnVoiceSendTab">⇥ Tab am PC</button>
+          <button class="chip" id="btnVoiceSendBs">⌫ Backspace</button>
+        </div>
+
+        <!-- Live Transcript Box -->
+        <div style="margin-top:10px;">
+          <label class="field-label">Live-Transkript / Diktierter Text:</label>
+          <textarea id="voiceTranscriptBox" placeholder="Hier erscheint dein diktierter Text live. Du kannst hier auch Text hineinschreiben und per ✨ KI-Politur umformulieren oder übersetzen lassen…"></textarea>
+        </div>
+
+        <div class="btn-row">
+          <button class="btn btn-primary" id="btnVoiceTypeAll">▶ Komplett am PC tippen</button>
+          <button class="btn btn-accent" id="btnVoiceAiPolish" title="Text im Feld durch Gemini korrigieren/übersetzen">✨ KI-Politur</button>
+          <button class="btn btn-sm" id="btnVoiceToTextTab" title="In den Text-Tab kopieren">📋</button>
+          <button class="btn btn-sm" id="btnVoiceClear">✕</button>
+        </div>
+      </div>
+
+      <!-- KI-Optionen: Satzzeichen, Sprachbefehle & Übersetzung -->
+      <div class="card">
+        <div class="card-header">
+          <h2 class="card-title">🧠 KI-Filter, Übersetzung &amp; Sprachbefehle</h2>
+        </div>
+
+        <div style="margin-bottom:10px;">
+          <label class="field-label">Sprach-Modus / Live-Übersetzung</label>
+          <select id="selVoiceStyle">
+            <option value="orig">🇩🇪 Original-Sprache beibehalten (Deutsch / Auto)</option>
+            <option value="en">🇬🇧 Live ins Englische übersetzen (DE → EN)</option>
+            <option value="fr">🇫🇷 Live ins Französische übersetzen (DE → FR)</option>
+            <option value="es">🇪🇸 Live ins Spanische übersetzen (DE → ES)</option>
+            <option value="it">🇮🇹 Live ins Italienische übersetzen (DE → IT)</option>
+            <option value="mail_de">💼 Als höfliche Business-Nachricht formulieren (DE)</option>
+            <option value="mail_en">💼 Als höfliche Business-Nachricht formulieren (EN)</option>
+          </select>
+        </div>
+
+        <div class="checkbox-row">
+          <label><input type="checkbox" id="chkVoiceClean" checked> Füllwörter („ähm“) entfernen &amp; perfekte Kommasetzung</label>
+        </div>
+        <div class="checkbox-row">
+          <label><input type="checkbox" id="chkVoiceCommands" checked> Sprachbefehle („Neue Zeile“ = Enter, „Tabulator“ = Tab)</label>
+        </div>
+        <div class="checkbox-row" style="margin-bottom:4px;">
+          <label><input type="checkbox" id="chkVoiceAutoSpace" checked> Automatisch Leerzeichen nach jedem Satz anfügen</label>
+        </div>
+      </div>
+
+      <!-- Gemini API Key & Modell-Konfiguration -->
+      <div class="card">
+        <div class="card-header">
+          <h2 class="card-title">🔑 Google Gemini API &amp; Modell-Wahl</h2>
+          <span class="badge" id="geminiKeyBadge">Lokal im Pixel</span>
+        </div>
+
+        <div style="margin-bottom:10px;">
+          <label class="field-label">Gemini API-Key (wird nur lokal auf deinem Pixel gespeichert)</label>
+          <div style="display:flex; gap:6px;">
+            <input type="password" id="inpGeminiKey" placeholder="AIzaSy..." autocomplete="off" style="flex:1;">
+            <button class="btn btn-sm" id="btnToggleKeyVis" type="button" title="Anzeigen/Verbergen">👁</button>
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div>
+            <label class="field-label">Streaming-Engine</label>
+            <select id="selVoiceEngine">
+              <option value="smart_vad">Smart-Live-Stream (VAD + KI-Politur)</option>
+              <option value="live_ws">WebSocket Live API (BidiGenerateContent)</option>
+            </select>
+          </div>
+          <div>
+            <label class="field-label">Gemini-Modell</label>
+            <select id="selGeminiModel">
+              <option value="gemini-2.5-flash">gemini-2.5-flash (Empfohlen)</option>
+              <option value="gemini-2.5-flash-lite">gemini-2.5-flash-lite (Ultra-Schnell)</option>
+              <option value="gemini-2.5-pro">gemini-2.5-pro (Max. Präzision)</option>
+              <option value="gemini-2.0-flash">gemini-2.0-flash</option>
+              <option value="gemini-2.0-flash-exp">gemini-2.0-flash-exp (Live-WS)</option>
+            </select>
+          </div>
+        </div>
+
+        <div style="margin-bottom:10px;">
+          <label class="field-label">Eigene Modell-ID (optional – überschreibt Dropdown, z.B. für Preview/3.5-Modelle)</label>
+          <input type="text" id="inpCustomGeminiModel" placeholder="Leer lassen für Dropdown-Auswahl oder z.B. gemini-2.5-flash eintragen">
+        </div>
+
+        <div style="margin-bottom:10px; display:flex; align-items:center; gap:10px;">
+          <span style="font-size:0.75rem; color:var(--text-muted); white-space:nowrap;" id="lblVadSilence">Sprechpause: 0.7s</span>
+          <input type="range" id="rangeVadSilence" min="400" max="2000" step="100" value="750" style="flex:1; accent-color:var(--primary);">
+        </div>
+
+        <div class="btn-row" style="margin-top:4px;">
+          <button class="btn btn-primary btn-sm" id="btnSaveAndTestGemini" style="flex:2;">💾 Key speichern &amp; Modelle vom Konto laden</button>
         </div>
       </div>
     </section>
@@ -481,7 +613,11 @@
   <nav class="bottom-nav">
     <button class="nav-item active" data-tab="tab-text">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7V4h16v3M9 20h6M12 4v16"/></svg>
-      <span>Textmodule</span>
+      <span>Text</span>
+    </button>
+    <button class="nav-item" data-tab="tab-voice">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg>
+      <span>Live-Diktat</span>
     </button>
     <button class="nav-item" data-tab="tab-touchpad">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="3"/><line x1="3" y1="14" x2="21" y2="14"/><line x1="12" y1="14" x2="12" y2="20"/></svg>
@@ -493,10 +629,10 @@
     </button>
     <button class="nav-item" data-tab="tab-system">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.604.852.997 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
-      <span>Jiggler/Sys</span>
+      <span>System</span>
     </button>
   </nav>
 
-  <script src="./app.js?v=5"></script>
+  <script src="./app.js?v=6"></script>
 </body>
 </html>

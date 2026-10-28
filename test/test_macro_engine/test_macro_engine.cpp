@@ -25,18 +25,30 @@ static MacroEngine *newEngine() {
     return &e;
 }
 
-void test_parse_type_text() {
+void test_parse_type_text_and_long_text() {
     MacroEngine *e = newEngine();
-    TEST_ASSERT_TRUE(e->handleLine(0, "T hallo"));
+    const char *cmd = "T Dies ist ein sehr langer Textbaustein mit mehr als hundert Zeichen, der über den longText-Zeiger ohne Abschneiden durchgereicht wird!";
+    TEST_ASSERT_TRUE(e->handleLine(0, cmd));
     TEST_ASSERT_EQUAL(1, emittedCount);
     TEST_ASSERT_TRUE(emitted[0].type == ActionType::TypeText);
-    TEST_ASSERT_EQUAL_STRING("hallo", emitted[0].text);
+    TEST_ASSERT_EQUAL_STRING(cmd + 2, emitted[0].cstr());
 }
 
-void test_parse_toggle_jiggler() {
+void test_parse_toggle_and_jcfg() {
     MacroEngine *e = newEngine();
     TEST_ASSERT_TRUE(e->handleLine(0, "J"));
     TEST_ASSERT_TRUE(emitted[0].type == ActionType::ToggleJiggler);
+    TEST_ASSERT_EQUAL_INT32(-1, emitted[0].intParams[0]);
+
+    TEST_ASSERT_TRUE(e->handleLine(0, "J ON"));
+    TEST_ASSERT_EQUAL_INT32(1, emitted[1].intParams[0]);
+
+    TEST_ASSERT_TRUE(e->handleLine(0, "JCFG 15 45 2 1"));
+    TEST_ASSERT_TRUE(emitted[2].type == ActionType::ConfigJiggler);
+    TEST_ASSERT_EQUAL_INT32(15, emitted[2].intParams[0]);
+    TEST_ASSERT_EQUAL_INT32(45, emitted[2].intParams[1]);
+    TEST_ASSERT_EQUAL_INT32(2, emitted[2].intParams[2]);
+    TEST_ASSERT_EQUAL_INT32(1, emitted[2].intParams[3]);
 }
 
 void test_parse_combo_modifiers() {
@@ -55,6 +67,38 @@ void test_parse_combo_gui_letter() {
     TEST_ASSERT_EQUAL(1, emitted[0].modCount);
     TEST_ASSERT_EQUAL_UINT8(0x83, emitted[0].mods[0]);
     TEST_ASSERT_EQUAL_UINT8('L', emitted[0].key);
+}
+
+void test_parse_mouse_and_media() {
+    MacroEngine *e = newEngine();
+    TEST_ASSERT_TRUE(e->handleLine(0, "M -12 34 -1"));
+    TEST_ASSERT_TRUE(emitted[0].type == ActionType::MouseMove);
+    TEST_ASSERT_EQUAL_INT32(-12, emitted[0].intParams[0]);
+    TEST_ASSERT_EQUAL_INT32(34, emitted[0].intParams[1]);
+    TEST_ASSERT_EQUAL_INT32(-1, emitted[0].intParams[2]);
+
+    TEST_ASSERT_TRUE(e->handleLine(0, "C DBL"));
+    TEST_ASSERT_TRUE(emitted[1].type == ActionType::MouseClick);
+    TEST_ASSERT_EQUAL_UINT8('D', emitted[1].key);
+
+    TEST_ASSERT_TRUE(e->handleLine(0, "MEDIA VOL+"));
+    TEST_ASSERT_TRUE(emitted[2].type == ActionType::MediaKey);
+    TEST_ASSERT_EQUAL_INT32(0x00E9, emitted[2].intParams[0]);
+}
+
+void test_parse_snippet_and_sys() {
+    MacroEngine *e = newEngine();
+    const char *snipCmd = "SNIP SET 3|Signatur|Mit freundlichen Grüßen\\nJens";
+    TEST_ASSERT_TRUE(e->handleLine(0, snipCmd));
+    TEST_ASSERT_TRUE(emitted[0].type == ActionType::SnippetOp);
+    TEST_ASSERT_EQUAL_UINT8('S', emitted[0].key);
+    TEST_ASSERT_EQUAL_INT32(3, emitted[0].intParams[0]);
+    TEST_ASSERT_EQUAL_STRING("Signatur", emitted[0].text);
+    TEST_ASSERT_EQUAL_STRING("Mit freundlichen Grüßen\\nJens", emitted[0].longText);
+
+    TEST_ASSERT_TRUE(e->handleLine(0, "SYS BOOTLOADER"));
+    TEST_ASSERT_TRUE(emitted[1].type == ActionType::SystemCmd);
+    TEST_ASSERT_EQUAL_UINT8('B', emitted[1].key);
 }
 
 void test_macro_executes_steps_with_timing() {
@@ -91,10 +135,12 @@ void test_unknown_macro_and_command() {
 
 int main(int, char **) {
     UNITY_BEGIN();
-    RUN_TEST(test_parse_type_text);
-    RUN_TEST(test_parse_toggle_jiggler);
+    RUN_TEST(test_parse_type_text_and_long_text);
+    RUN_TEST(test_parse_toggle_and_jcfg);
     RUN_TEST(test_parse_combo_modifiers);
     RUN_TEST(test_parse_combo_gui_letter);
+    RUN_TEST(test_parse_mouse_and_media);
+    RUN_TEST(test_parse_snippet_and_sys);
     RUN_TEST(test_macro_executes_steps_with_timing);
     RUN_TEST(test_macro_busy_rejects_second);
     RUN_TEST(test_unknown_macro_and_command);

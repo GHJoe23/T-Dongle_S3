@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#0B0D10">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>LogiControl K400+ • T-Dongle S3</title>
+  <link rel="manifest" href="./manifest.json">
+  <link rel="icon" type="image/svg+xml" href="./icon.svg">
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+
+  <!-- Top Header -->
+  <header class="app-header">
+    <div class="header-top">
+      <div class="brand">
+        <div class="brand-icon">K400</div>
+        <div>
+          <div class="brand-title">LogiControl S3</div>
+          <div class="brand-sub" id="connSubText">Nicht verbunden • PIN 400400</div>
+        </div>
+      </div>
+      <button class="btn-connect" id="btnConnect">
+        <span class="status-dot"></span>
+        <span id="btnConnectLabel">Verbinden</span>
+      </button>
+    </div>
+
+    <div class="status-bar">
+      <button class="status-pill" id="pillJiggler" title="Jiggler umschalten">
+        <span id="pillJigglerText">Jiggler: --</span>
+      </button>
+      <button class="status-pill" id="pillLayout" title="Tastaturlayout wechseln">
+        <span id="pillLayoutText">Layout: DE-QWERTZ</span>
+      </button>
+      <button class="status-pill" id="pillStealth" title="Stealth-Modus (Display & LED aus)">
+        <span id="pillStealthText">Display: AN</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- Main Workspace -->
+  <main class="app-main">
+
+    <!-- TAB 1: TEXT & MODULE -->
+    <section class="tab-panel active" id="tab-text">
+      <!-- Live Text Typer -->
+      <div class="card">
+        <div class="card-header">
+          <h2 class="card-title">⌨️ Direkt-Text tippen</h2>
+          <span class="badge" id="charCountBadge">0 Zeichen</span>
+        </div>
+        <textarea id="liveTextInput" placeholder="Text hier eingeben, diktieren oder einfügen (Umlaute äöüß, @, \, |, € werden im DE-Layout getippt)..."></textarea>
+        <div class="checkbox-row">
+          <label><input type="checkbox" id="chkAppendEnter" checked> Enter (↵) am Ende senden</label>
+          <label><input type="checkbox" id="chkClearBefore"> Vorher Strg+A &amp; Entf</label>
+        </div>
+        <div class="btn-row">
+          <button class="btn btn-primary" id="btnSendLiveText">▶ Jetzt tippen</button>
+          <button class="btn" id="btnPasteAndType">📋 Einfügen &amp; tippen</button>
+          <button class="btn btn-sm" id="btnClearLiveText">✕</button>
+        </div>
+      </div>
+
+      <!-- Textmodule / Snippets (Smartphone LocalStorage + Sync) -->
+      <div class="card">
+        <div class="card-header">
+          <h2 class="card-title">📚 Textmodule (Pixel 10 Pro XL)</h2>
+          <button class="btn btn-sm btn-primary" id="btnNewSnippet">+ Neu</button>
+        </div>
+
+        <div class="chip-bar" id="categoryChips">
+          <button class="chip active" data-cat="ALL">Alle</button>
+          <button class="chip" data-cat="E-Mail">E-Mail</button>
+          <button class="chip" data-cat="Befehle">Befehle</button>
+          <button class="chip" data-cat="Vorlagen">Vorlagen</button>
+          <button class="chip" data-cat="Logins">Logins / IDs</button>
+        </div>
+
+        <div class="snippet-list" id="snippetList"></div>
+
+        <div class="btn-row" style="margin-top: 12px;">
+          <button class="btn btn-sm" id="btnExportSnippets">⬇ JSON-Backup</button>
+          <button class="btn btn-sm" id="btnImportSnippets">⬆ JSON-Import</button>
+          <input type="file" id="fileImportSnippets" accept=".json" style="display:none">
+        </div>
+      </div>
+
+      <!-- On-Device Hardware Snippets (ESP32-S3 Flash NVS) -->
+      <div class="card">
+        <div class="card-header">
+          <h2 class="card-title">💾 Dongle-Speicher (NVS-Slots 0–11)</h2>
+          <button class="btn btn-sm" id="btnRefreshDongleSnips">↻ Laden</button>
+        </div>
+        <div class="snippet-list" id="dongleSnippetList">
+          <div style="font-size:0.8rem; color:var(--text-muted);">Mit Dongle verbinden, um die auf dem Stick gespeicherten Textmodule anzuzeigen.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 2: TOUCHPAD & TASTEN -->
+    <section class="tab-panel" id="tab-touchpad">
+      <div class="card">
+        <div class="card-header">
+          <h2 class="card-title">🖱️ K400+ Multi-Touch Trackpad</h2>
+          <span class="badge" id="tpSpeedBadge">Speed: 1.6x</span>
+        </div>
+
+        <div class="touchpad-wrap">
+          <div class="touchpad-area" id="touchpadArea">
+            <div class="touchpad-hint">
+              1 Finger: Maus bewegen &amp; Links-Tap<br>
+              Doppeltipp: Doppelklick<br>
+              2 Finger Tap: Rechtsklick
+            </div>
+          </div>
+          <div class="scroll-strip" id="scrollStrip">
+            <span>▲</span>
+            <span>SCRL</span>
+            <span>▼</span>
+          </div>
+        </div>
+
+        <div class="mouse-btn-row">
+          <button class="btn" id="btnMouseLeft">Links</button>
+          <button class="btn" id="btnMouseDrag">Halten</button>
+          <button class="btn" id="btnMouseMiddle">Mitte</button>
+          <button class="btn" id="btnMouseRight">Rechts</button>
+        </div>
+
+        <div style="margin-top: 10px; display:flex; align-items:center; gap:10px;">
+          <span style="font-size:0.76rem; color:var(--text-muted);">Zeigertempo:</span>
+          <input type="range" id="rangeTpSensitivity" min="0.6" max="3.5" step="0.2" value="1.6" style="flex:1; accent-color:var(--primary);">
+        </div>
+      </div>
+
+      <!-- Navigation & Editing Keys -->
+      <div class="card">
+        <div class="card-header">
+          <h2 class="card-title">🧭 Navigation &amp; Steuertasten</h2>
+        </div>
+        <div class="grid-3">
+          <button class="key-btn" data-combo="ESC">Esc</button>
+          <button class="key-btn" data-combo="UP">▲<span class="sub">Hoch</span></button>
+          <button class="key-btn" data-combo="BACKSPACE">⌫<span class="sub">Löschen</span></button>
+
+          <button class="key-btn" data-combo="LEFT">◀<span class="sub">Links</span></button>
+          <button class="key-btn" data-combo="ENTER">⏎<span class="sub">Enter</span></button>
+          <button class="key-btn" data-combo="RIGHT">▶<span class="sub">Rechts</span></button>
+
+          <button class="key-btn" data-combo="TAB">⇥ Tab</button>
+          <button class="key-btn" data-combo="DOWN">▼<span class="sub">Runter</span></button>
+          <button class="key-btn" data-combo="ENTF">Entf</button>
+
+          <button class="key-btn" data-combo="POS1">Pos1</button>
+          <button class="key-btn" data-combo="LEER">␣ Leertaste</button>
+          <button class="key-btn" data-combo="ENDE">Ende</button>
+        </div>
+      </div>
+
+      <!-- Media Control -->
+      <div class="card">
+        <div class="card-header">
+          <h2 class="card-title">🎵 Media-Steuerung (K400+ Sondertasten)</h2>
+        </div>
+        <div class="grid-3">
+          <button class="key-btn" data-media="PREV">⏮<span class="sub">Zurück</span></button>
+          <button class="key-btn" data-media="PLAY">⏯<span class="sub">Play/Pause</span></button>
+          <button class="key-btn" data-media="NEXT">⏭<span class="sub">Weiter</span></button>
+          <button class="key-btn" data-media="MUTE">🔇<span class="sub">Stumm</span></button>
+          <button class="key-btn" data-media="VOL-">🔉<span class="sub">Leiser</span></button>
+          <button class="key-btn" data-media="VOL+">🔊<span class="sub">Lauter</span></button>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 3: SHORTCUTS & MAKROS -->
+    <section class="tab-panel" id="tab-shortcuts">
+      <div class="card">
+        <div class="card-header">
+          <h2 class="card-title">⚡ System-Shortcuts (Windows / Linux)</h2>
+        </div>
+        <div class="grid-2">
+          <button class="key-btn" data-combo="GUI+L">🔒 PC Sperren<span class="sub">Win + L</span></button>
+          <button class="key-btn" data-combo="STRG+UMSCHALT+ESC">📊 Task-Manager<span class="sub">Strg + Shift + Esc</span></button>
+          <button class="key-btn" data-combo="GUI+D">🖥 Desktop zeigen<span class="sub">Win + D</span></button>
+          <button class="key-btn" data-combo="ALT+TAB">🔄 Fensterwechsel<span class="sub">Alt + Tab</span></button>
+          <button class="key-btn" data-combo="GUI+UMSCHALT+S">📸 Screenshot<span class="sub">Win + Shift + S</span></button>
+          <button class="key-btn" data-combo="GUI+R">⚙️ Ausführen<span class="sub">Win + R</span></button>
+          <button class="key-btn" data-combo="GUI+E">📁 Explorer<span class="sub">Win + E</span></button>
+          <button class="key-btn" data-combo="ALT+F4">❌ Schließen<span class="sub">Alt + F4</span></button>
+          <button class="key-btn" data-combo="STRG+ALT+ENTF">🛡️ Sicherheitsdialog<span class="sub">Strg + Alt + Entf</span></button>
+          <button class="key-btn" data-combo="GUI+V">📋 Verlauf<span class="sub">Win + V</span></button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <h2 class="card-title">✂️ Bearbeiten &amp; Browser</h2>
+        </div>
+        <div class="grid-3">
+          <button class="key-btn" data-combo="STRG+C">Kopieren<span class="sub">Strg + C</span></button>
+          <button class="key-btn" data-combo="STRG+V">Einfügen<span class="sub">Strg + V</span></button>
+          <button class="key-btn" data-combo="STRG+X">Ausschn.<span class="sub">Strg + X</span></button>
+          <button class="key-btn" data-combo="STRG+Z">Rückgängig<span class="sub">Strg + Z</span></button>
+          <button class="key-btn" data-combo="STRG+Y">Wiederh.<span class="sub">Strg + Y</span></button>
+          <button class="key-btn" data-combo="STRG+A">Alles mark.<span class="sub">Strg + A</span></button>
+          <button class="key-btn" data-combo="STRG+S">Speichern<span class="sub">Strg + S</span></button>
+          <button class="key-btn" data-combo="STRG+F">Suchen<span class="sub">Strg + F</span></button>
+          <button class="key-btn" data-combo="F5">Aktualis.<span class="sub">F5</span></button>
+        </div>
+      </div>
+
+      <!-- Eigener Tastenkombination-Generator -->
+      <div class="card">
+        <div class="card-header">
+          <h2 class="card-title">🛠️ Eigene Tastenkombination senden</h2>
+        </div>
+        <div class="checkbox-row">
+          <label><input type="checkbox" class="mod-chk" value="STRG"> Strg</label>
+          <label><input type="checkbox" class="mod-chk" value="UMSCHALT"> Shift</label>
+          <label><input type="checkbox" class="mod-chk" value="ALT"> Alt</label>
+          <label><input type="checkbox" class="mod-chk" value="GUI"> Win/GUI</label>
+          <label><input type="checkbox" class="mod-chk" value="ALTGR"> AltGr</label>
+        </div>
+        <div class="btn-row">
+          <select id="selCustomKey" style="flex:2;">
+            <option value="A">Taste A</option>
+            <option value="B">Taste B</option>
+            <option value="C">Taste C</option>
+            <option value="D">Taste D</option>
+            <option value="E">Taste E</option>
+            <option value="F">Taste F</option>
+            <option value="I">Taste I</option>
+            <option value="L">Taste L</option>
+            <option value="N">Taste N</option>
+            <option value="P">Taste P</option>
+            <option value="Q">Taste Q</option>
+            <option value="R">Taste R</option>
+            <option value="S">Taste S</option>
+            <option value="T">Taste T</option>
+            <option value="V">Taste V</option>
+            <option value="W">Taste W</option>
+            <option value="X">Taste X</option>
+            <option value="Y">Taste Y</option>
+            <option value="Z">Taste Z</option>
+            <option value="ENTER">Enter</option>
+            <option value="TAB">Tab</option>
+            <option value="ESC">Esc</option>
+            <option value="ENTF">Entf</option>
+            <option value="LEER">Leertaste</option>
+            <option value="F1">F1</option>
+            <option value="F2">F2</option>
+            <option value="F3">F3</option>
+            <option value="F4">F4</option>
+            <option value="F5">F5</option>
+            <option value="F6">F6</option>
+            <option value="F7">F7</option>
+            <option value="F8">F8</option>
+            <option value="F9">F9</option>
+            <option value="F10">F10</option>
+            <option value="F11">F11</option>
+            <option value="F12">F12</option>
+          </select>
+          <button class="btn btn-primary" id="btnFireCustomCombo" style="flex:1;">Auslösen</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 4: JIGGLER & SYSTEM -->
+    <section class="tab-panel" id="tab-system">
+      <!-- Jiggler Settings -->
+      <div class="card">
+        <div class="card-header">
+          <h2 class="card-title">🎯 Mouse-Jiggler Konfiguration</h2>
+          <span class="badge" id="jiggleStatsBadge">#0 Bewegungen</span>
+        </div>
+
+        <div class="btn-row" style="margin-bottom: 12px;">
+          <button class="btn btn-accent" id="btnJigglerOn">Jiggler AN</button>
+          <button class="btn btn-danger" id="btnJigglerOff">PAUSE</button>
+        </div>
+
+        <div style="margin-bottom: 10px;">
+          <label class="field-label">Bewegungsmuster (Tarnmodus)</label>
+          <select id="selJiggleMode">
+            <option value="0">Ping-Pong (±1..4 px, nächster Tick kehrt zurück)</option>
+            <option value="1">Instant-Return (Sofort-Rücksprung nach 35 ms • 0 px Drift)</option>
+            <option value="2">Natural Arc (Sanfte 4-Schritt-Mikrokurve)</option>
+          </select>
+        </div>
+
+        <div class="form-row">
+          <div>
+            <label class="field-label">Min. Intervall (Sek.)</label>
+            <input type="number" id="inpJiggleMin" min="2" max="1800" value="30">
+          </div>
+          <div>
+            <label class="field-label">Max. Intervall (Sek.)</label>
+            <input type="number" id="inpJiggleMax" min="2" max="3600" value="60">
+          </div>
+        </div>
+
+        <div class="checkbox-row">
+          <label><input type="checkbox" id="chkJiggleAuto" checked> Automatisch starten beim Einstecken in USB</label>
+        </div>
+
+        <button class="btn btn-primary" id="btnSaveJiggleCfg" style="width:100%;">💾 Jiggler-Konfiguration speichern</button>
+      </div>
+
+      <!-- Keyboard, Stealth & Security -->
+      <div class="card">
+        <div class="card-header">
+          <h2 class="card-title">🛡️ Tastaturlayout, Tarnung &amp; PIN</h2>
+        </div>
+
+        <div class="form-row">
+          <div>
+            <label class="field-label">PC-Tastaturlayout</label>
+            <select id="selLayout">
+              <option value="DE">Deutsch (DE-QWERTZ)</option>
+              <option value="US">Englisch (US-QWERTY)</option>
+            </select>
+          </div>
+          <div>
+            <label class="field-label">Tipp-Verzögerung (ms)</label>
+            <input type="number" id="inpKeyDelay" min="2" max="200" value="10">
+          </div>
+        </div>
+
+        <div class="form-row" style="align-items: end;">
+          <div>
+            <label class="field-label">Feste BLE-PIN (6 Ziffern)</label>
+            <input type="number" id="inpBlePin" min="100000" max="999999" value="400400">
+          </div>
+          <div>
+            <button class="btn" id="btnSavePin" style="width:100%;">PIN speichern</button>
+          </div>
+        </div>
+
+        <div class="btn-row" style="margin-top:8px;">
+          <button class="btn" id="btnToggleStealth">🕶️ Stealth-Modus (Display &amp; LED aus/an)</button>
+        </div>
+      </div>
+
+      <!-- Bootloader / Firmware Update -->
+      <div class="card">
+        <div class="card-header">
+          <h2 class="card-title">🔧 Firmware-Flash &amp; Diagnose</h2>
+        </div>
+        <p style="font-size:0.8rem; color:var(--text-muted); margin-top:0;">
+          Versetzt den T-Dongle S3 direkt per Software in den ESP32-S3 Download-Modus (COM-Port wird sichtbar), ohne beim Einstecken den kleinen Knopf drücken zu müssen.
+        </p>
+        <div class="btn-row">
+          <button class="btn" id="btnRequestStatus">📊 Status abfragen</button>
+          <button class="btn btn-danger" id="btnBootloader">⚡ In Flash-Modus (Bootloader) starten</button>
+        </div>
+
+        <div style="margin-top:12px;">
+          <label class="field-label">BLE-Protokoll-Log</label>
+          <div class="log-box" id="logBox"></div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Modal für Neues / Bearbeitetes Textmodul -->
+  <div class="modal-backdrop" id="snippetModal">
+    <div class="modal">
+      <div class="card-header" style="margin-bottom:0;">
+        <h3 class="card-title" id="modalTitle">Textmodul bearbeiten</h3>
+        <button class="btn btn-sm" id="btnCloseModal">✕</button>
+      </div>
+      <div>
+        <label class="field-label">Titel / Kurzname</label>
+        <input type="text" id="modSnipTitle" maxlength="30" placeholder="z.B. E-Mail Signatur">
+      </div>
+      <div class="form-row" style="margin-bottom:0;">
+        <div>
+          <label class="field-label">Kategorie</label>
+          <select id="modSnipCat">
+            <option value="E-Mail">E-Mail</option>
+            <option value="Befehle">Befehle</option>
+            <option value="Vorlagen">Vorlagen</option>
+            <option value="Logins">Logins / IDs</option>
+          </select>
+        </div>
+        <div>
+          <label class="field-label">Dongle-Slot (optional)</label>
+          <select id="modSnipSlot">
+            <option value="-1">Nur auf Pixel speichern</option>
+            <option value="0">Slot 0 (Dongle-NVS)</option>
+            <option value="1">Slot 1 (Dongle-NVS)</option>
+            <option value="2">Slot 2 (Dongle-NVS)</option>
+            <option value="3">Slot 3 (Dongle-NVS)</option>
+            <option value="4">Slot 4 (Dongle-NVS)</option>
+            <option value="5">Slot 5 (Dongle-NVS)</option>
+            <option value="6">Slot 6 (Dongle-NVS)</option>
+            <option value="7">Slot 7 (Dongle-NVS)</option>
+            <option value="8">Slot 8 (Dongle-NVS)</option>
+            <option value="9">Slot 9 (Dongle-NVS)</option>
+            <option value="10">Slot 10 (Dongle-NVS)</option>
+            <option value="11">Slot 11 (Dongle-NVS)</option>
+          </select>
+        </div>
+      </div>
+      <div>
+        <label class="field-label">Textinhalt (Mehrzeilig möglich)</label>
+        <textarea id="modSnipText" placeholder="Text des Moduls..."></textarea>
+      </div>
+      <div class="checkbox-row" style="margin:0;">
+        <label><input type="checkbox" id="modSnipEnter" checked> Beim Tippen automatisch Enter anhängen</label>
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-primary" id="btnSaveModalSnippet">Speichern</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Notification -->
+  <div class="toast" id="toastMsg">Gesendet</div>
+
+  <!-- Bottom Tab Navigation -->
+  <nav class="bottom-nav">
+    <button class="nav-item active" data-tab="tab-text">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7V4h16v3M9 20h6M12 4v16"/></svg>
+      <span>Textmodule</span>
+    </button>
+    <button class="nav-item" data-tab="tab-touchpad">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="3"/><line x1="3" y1="14" x2="21" y2="14"/><line x1="12" y1="14" x2="12" y2="20"/></svg>
+      <span>Touchpad</span>
+    </button>
+    <button class="nav-item" data-tab="tab-shortcuts">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+      <span>Shortcuts</span>
+    </button>
+    <button class="nav-item" data-tab="tab-system">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.604.852.997 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      <span>Jiggler/Sys</span>
+    </button>
+  </nav>
+
+  <script src="./app.js"></script>
+</body>
+</html>

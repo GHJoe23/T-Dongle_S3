@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect width="512" height="512" rx="112" fill="#0B0D10"/>
+  <rect x="36" y="36" width="440" height="440" rx="88" fill="#12161C" stroke="#00B8FC" stroke-width="8"/>
+  <!-- USB Receiver / K400 Icon -->
+  <rect x="136" y="108" width="240" height="170" rx="28" fill="#1B222C" stroke="#00B8FC" stroke-width="12"/>
+  <!-- Keyboard keys -->
+  <rect x="168" y="142" width="28" height="24" rx="5" fill="#00B8FC"/>
+  <rect x="208" y="142" width="28" height="24" rx="5" fill="#00B8FC"/>
+  <rect x="248" y="142" width="28" height="24" rx="5" fill="#00B8FC"/>
+  <rect x="288" y="142" width="56" height="24" rx="5" fill="#00E676"/>
+  <rect x="168" y="180" width="28" height="24" rx="5" fill="#00B8FC"/>
+  <rect x="208" y="180" width="28" height="24" rx="5" fill="#00B8FC"/>
+  <rect x="248" y="180" width="28" height="24" rx="5" fill="#00B8FC"/>
+  <rect x="288" y="180" width="56" height="62" rx="8" fill="#10151C" stroke="#00E676" stroke-width="6"/>
+  <rect x="168" y="218" width="108" height="24" rx="5" fill="#00B8FC"/>
+  <!-- Mouse / Jiggle wave -->
+  <path d="M168 356 C204 316, 236 396, 272 356 C308 316, 340 396, 376 356" fill="none" stroke="#00E676" stroke-width="16" stroke-linecap="round"/>
+  <circle cx="140" cy="356" r="12" fill="#00B8FC"/>
+</svg>

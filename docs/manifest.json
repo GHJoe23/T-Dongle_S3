@@ -1,0 +1,19 @@
+{
+  "name": "LogiControl K400+ • T-Dongle S3",
+  "short_name": "K400+ Remote",
+  "description": "WebBluetooth Fernbedienung, Textmodule, Touchpad & Jiggler für LILYGO T-Dongle S3 (Pixel 10 Pro XL)",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0B0D10",
+  "theme_color": "#0B0D10",
+  "icons": [
+    {
+      "src": "./icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

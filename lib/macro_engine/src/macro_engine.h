@@ -1,14 +1,31 @@
 #pragma once
 #include <stdint.h>
 
-enum class ActionType : uint8_t { TypeText, Combo, ToggleJiggler, Error };
+enum class ActionType : uint8_t {
+    TypeText,
+    Combo,
+    ToggleJiggler,
+    ConfigJiggler,
+    MouseMove,
+    MouseClick,
+    MediaKey,
+    SnippetOp,
+    SystemCmd,
+    Error
+};
 
 struct Action {
     ActionType type;
-    char text[64];
+    char text[96];
     uint8_t mods[4];
     uint8_t modCount;
     uint8_t key;
+    const char *longText = nullptr;
+    int32_t intParams[4] = {0, 0, 0, 0};
+
+    const char *cstr() const {
+        return longText ? longText : text;
+    }
 };
 
 struct MacroStep {
@@ -41,6 +58,12 @@ private:
     uint32_t _nextAt = 0;
 
     bool parseCombo(const char *s, Action &out);
+    bool parseMouseMove(const char *s, Action &out);
+    bool parseMouseClick(const char *s, Action &out);
+    bool parseMedia(const char *s, Action &out);
+    bool parseJigglerCfg(const char *s, Action &out);
+    bool parseSnippetOp(const char *s, Action &out);
+    bool parseSystemCmd(const char *s, Action &out);
     void emitError(const char *reason);
     void startMacro(uint32_t now, uint8_t idx);
 };

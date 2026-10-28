@@ -4,14 +4,16 @@
   const SERVICE_UUID = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
   const CHAR_RX_UUID = '6e400002-b5a3-f393-e0a9-e50e24dcca9e';
   const CHAR_TX_UUID = '6e400003-b5a3-f393-e0a9-e50e24dcca9e';
-  const STORAGE_KEY = 'tdongle_k400_snippets_v1';
+  const STORAGE_KEY = 'tdongle_k400_snippets_v2';
 
   let bleDevice = null;
   let rxChar = null;
   let txChar = null;
   let writePromise = Promise.resolve();
+  let bleBusy = false;
   let mouseBusy = false;
   let rxLineBuffer = '';
+  let statusPollTimer = null;
 
   let deviceState = {
     j: 1,
@@ -20,10 +22,12 @@
     mode: 0,
     auto: 1,
     lay: 'DE',
-    delay: 10,
+    delay: 12,
+    rnd: 0,
+    rmax: 55,
     stealth: 0,
     cnt: 0,
-    next: 0,
+    next: 30,
     pin: 400400
   };
 
@@ -58,17 +62,17 @@
     },
     {
       id: 's4',
-      title: 'Git Status & Log',
-      cat: 'Befehle',
-      text: 'git status && git log -n 5 --oneline',
+      title: 'Login-Sequenz (Tab + Pause)',
+      cat: 'Logins',
+      text: 'benutzername{TAB}{W:400}Passwort123!',
       enter: true,
       slot: 3
     },
     {
       id: 's5',
-      title: 'PowerShell USB-Check',
+      title: 'Git Status & Log',
       cat: 'Befehle',
-      text: 'Get-PnpDevice -PresentOnly | Where-Object { $_.InstanceId -match "VID_046D" }',
+      text: 'git status && git log -n 5 --oneline',
       enter: true,
       slot: -1
     }
@@ -107,6 +111,19 @@
     box.scrollTop = box.scrollHeight;
   }
 
+  function insertAtCursor(textarea, token) {
+    if (!textarea) return;
+    const start = textarea.selectionStart ?? textarea.value.length;
+    const end = textarea.selectionEnd ?? textarea.value.length;
+    const before = textarea.value.slice(0, start);
+    const after = textarea.value.slice(end);
+    textarea.value = before + token + after;
+    const newPos = start + token.length;
+    textarea.focus();
+    textarea.setSelectionRange(newPos, newPos);
+    textarea.dispatchEvent(new Event('input'));
+  }
+
   // --- Escape / Unescape für mehrzeilige Strings im Zeilenprotokoll ---
   function escapeForWire(str) {
     return str
@@ -130,7 +147,7 @@
     return out;
   }
 
-  // --- BLE Communication ---
+  // --- BLE Communication & Status Sync ---
   function isConnected() {
     return !!(bleDevice && bleDevice.gatt && bleDevice.gatt.connected && rxChar);
   }
@@ -148,10 +165,10 @@
       lbl.textContent = 'Verbinden';
       sub.textContent = `Bereit • Standard-PIN ${deviceState.pin}`;
     }
-    updateStatusPills();
+    updateStatusPills(false);
   }
 
-  function updateStatusPills() {
+  function updateStatusPills(syncInputs = true) {
     const pJig = $('pillJiggler');
     const pJigTxt = $('pillJigglerText');
     const pLay = $('pillLayout');
@@ -179,13 +196,58 @@
     }
 
     $('jiggleStatsBadge').textContent = `#${deviceState.cnt} Bewegungen`;
-    $('selJiggleMode').value = String(deviceState.mode);
-    $('inpJiggleMin').value = String(deviceState.min);
-    $('inpJiggleMax').value = String(deviceState.max);
-    $('chkJiggleAuto').checked = !!deviceState.auto;
-    $('selLayout').value = deviceState.lay;
-    $('inpKeyDelay').value = String(deviceState.delay);
-    $('inpBlePin').value = String(deviceState.pin);
+
+    if (syncInputs) {
+      if (document.activeElement !== $('selJiggleMode')) {
+        $('selJiggleMode').value = String(deviceState.mode);
+      }
+      if (document.activeElement !== $('inpJiggleMin')) {
+        $('inpJiggleMin').value = String(deviceState.min);
+      }
+      if (document.activeElement !== $('inpJiggleMax')) {
+        $('inpJiggleMax').value = String(deviceState.max);
+      }
+      $('chkJiggleAuto').checked = !!deviceState.auto;
+      if (document.activeElement !== $('selLayout')) {
+        $('selLayout').value = deviceState.lay;
+      }
+      if (document.activeElement !== $('inpKeyDelay')) {
+        $('inpKeyDelay').value = String(deviceState.delay);
+      }
+      if (document.activeElement !== $('inpKeyDelayMax')) {
+        $('inpKeyDelayMax').value = String(deviceState.rmax || 55);
+      }
+      $('chkRandomDelay').checked = !!deviceState.rnd;
+      if (document.activeElement !== $('inpBlePin')) {
+        $('inpBlePin').value = String(deviceState.pin);
+      }
+    }
+  }
+
+  function applyStatJson(jsonStr, logIt = false) {
+    try {
+      const obj = JSON.parse(jsonStr);
+      const changed =
+        obj.j !== deviceState.j ||
+        obj.lay !== deviceState.lay ||
+        obj.stealth !== deviceState.stealth ||
+        obj.rnd !== deviceState.rnd;
+      deviceState = { ...deviceState, ...obj };
+      updateStatusPills(changed);
+      if (logIt) addLog('RX', `STAT ${jsonStr}`);
+    } catch (_) {}
+  }
+
+  // Liest den vollständigen Status direkt per GATT Read von txChar (100% zuverlässig)
+  async function readStatusFromDongle(logIt = false) {
+    if (!isConnected() || !txChar || bleBusy) return;
+    try {
+      const dv = await txChar.readValue();
+      const text = new TextDecoder('utf-8').decode(dv.buffer).trim();
+      if (text.startsWith('STAT ')) {
+        applyStatJson(text.slice(5), logIt);
+      }
+    } catch (_) {}
   }
 
   function onTxNotification(event) {
@@ -202,17 +264,11 @@
   }
 
   function handleIncomingLine(line) {
-    addLog('RX', line);
     if (line.startsWith('STAT ')) {
-      try {
-        const obj = JSON.parse(line.slice(5));
-        deviceState = { ...deviceState, ...obj };
-        updateConnectionUi();
-      } catch (e) {
-        console.warn('Bad STAT JSON:', e);
-      }
+      applyStatJson(line.slice(5), false);
       return;
     }
+    addLog('RX', line);
     if (line.startsWith('SNIP ')) {
       const rest = line.slice(5);
       if (rest === 'END') {
@@ -243,6 +299,7 @@
     }
     try {
       if (isConnected()) {
+        clearInterval(statusPollTimer);
         bleDevice.gatt.disconnect();
         return;
       }
@@ -256,6 +313,7 @@
       });
 
       bleDevice.addEventListener('gattserverdisconnected', () => {
+        clearInterval(statusPollTimer);
         rxChar = null;
         txChar = null;
         updateConnectionUi();
@@ -276,7 +334,15 @@
 
       dongleSnippets = [];
       await sendCommand('SYS STATUS');
+      await readStatusFromDongle(true);
+      updateStatusPills(true);
       await sendCommand('SNIP LIST');
+
+      // Jede Sekunde Status vom Dongle lesen, damit Countdown & Zähler live laufen
+      clearInterval(statusPollTimer);
+      statusPollTimer = setInterval(() => {
+        readStatusFromDongle(false);
+      }, 1100);
     } catch (err) {
       addLog('ERR', err.message || String(err));
       showToast('Verbindung abgebrochen');
@@ -292,23 +358,29 @@
     if (!silent) addLog('TX', cmdLine);
 
     const payload = new TextEncoder().encode(cmdLine + '\n');
-    const chunkSize = 20; // 20 Bytes passt garantiert in jede BLE-MTU (auch MTU 23)
+    const chunkSize = 20;
 
     writePromise = writePromise
       .then(async () => {
-        for (let offset = 0; offset < payload.length; offset += chunkSize) {
-          const slice = payload.slice(offset, offset + chunkSize);
-          if (silent && typeof rxChar.writeValueWithoutResponse === 'function') {
-            await rxChar.writeValueWithoutResponse(slice);
-          } else if (typeof rxChar.writeValueWithResponse === 'function') {
-            await rxChar.writeValueWithResponse(slice);
-          } else {
-            await rxChar.writeValue(slice);
+        bleBusy = true;
+        try {
+          for (let offset = 0; offset < payload.length; offset += chunkSize) {
+            const slice = payload.slice(offset, offset + chunkSize);
+            if (silent && typeof rxChar.writeValueWithoutResponse === 'function') {
+              await rxChar.writeValueWithoutResponse(slice);
+            } else if (typeof rxChar.writeValueWithResponse === 'function') {
+              await rxChar.writeValueWithResponse(slice);
+            } else {
+              await rxChar.writeValue(slice);
+            }
           }
+          return true;
+        } finally {
+          bleBusy = false;
         }
-        return true;
       })
       .catch((err) => {
+        bleBusy = false;
         const msg = err && err.message ? err.message : String(err);
         addLog('ERR', msg);
         if (!silent) showToast(`BLE-Fehler: ${msg}`);
@@ -318,24 +390,49 @@
     return writePromise;
   }
 
-  // Sendet auch sehr lange Textmodule zuverlässig in Segmenten
-  async function typeLongText(rawText, appendEnter = false, clearBefore = false) {
+  // Sendet auch sehr lange Textmodule inkl. temporärem Tipp-Modus zuverlässig
+  async function typeLongText(rawText, appendEnter = false, clearBefore = false, timingOverride = 'dongle') {
     if (!isConnected()) {
       showToast('Bitte zuerst mit dem Dongle verbinden!');
       return;
     }
     haptic(15);
+
+    const origDelay = deviceState.delay || 12;
+    const origRnd = deviceState.rnd ? 1 : 0;
+    const origRmax = deviceState.rmax || 55;
+    let changedTiming = false;
+
+    if (timingOverride === 'human') {
+      await sendCommand('SYS DELAY 18 1 75');
+      changedTiming = true;
+    } else if (timingOverride === 'fast') {
+      await sendCommand('SYS DELAY 8 0 15');
+      changedTiming = true;
+    } else if (timingOverride === 'slow') {
+      await sendCommand('SYS DELAY 90 0 90');
+      changedTiming = true;
+    } else if (timingOverride === 'custom') {
+      const customMs = Math.max(5, Math.min(500, parseInt($('inpCustomCharPause').value, 10) || 120));
+      await sendCommand(`SYS DELAY ${customMs} 0 ${customMs}`);
+      changedTiming = true;
+    }
+
     if (clearBefore) {
       await sendCommand('K STRG+A');
       await sendCommand('K BACKSPACE');
     }
 
     const fullText = appendEnter ? rawText + '\n' : rawText;
-    const maxSegmentChars = 600;
+    const maxSegmentChars = 500;
     for (let i = 0; i < fullText.length; i += maxSegmentChars) {
       const seg = fullText.slice(i, i + maxSegmentChars);
       const escaped = escapeForWire(seg);
       await sendCommand(`T ${escaped}`);
+    }
+
+    if (changedTiming) {
+      await sendCommand(`SYS DELAY ${origDelay} ${origRnd} ${origRmax}`);
     }
     showToast('Text gesendet ✓');
   }
@@ -396,7 +493,7 @@
       `;
 
       card.querySelector(`[data-run="${s.id}"]`).addEventListener('click', () => {
-        typeLongText(s.text, !!s.enter, false);
+        typeLongText(s.text, !!s.enter, false, 'dongle');
       });
       card.querySelector(`[data-edit="${s.id}"]`).addEventListener('click', () => openSnippetModal(s));
       card.querySelector(`[data-del="${s.id}"]`).addEventListener('click', () => {
@@ -621,20 +718,34 @@
   function initEvents() {
     $('btnConnect').addEventListener('click', connectBle);
 
-    // Header Status Pills
-    $('pillJiggler').addEventListener('click', () => {
+    // Header Status Pills (Optimistisches UI-Update + Befehl + Readback)
+    $('pillJiggler').addEventListener('click', async () => {
       haptic(15);
-      sendCommand('J TOGGLE');
+      const nextState = deviceState.j ? 0 : 1;
+      deviceState.j = nextState;
+      updateStatusPills(false);
+      await sendCommand(nextState ? 'J ON' : 'J OFF');
+      setTimeout(() => readStatusFromDongle(false), 60);
     });
-    $('pillLayout').addEventListener('click', () => {
+
+    $('pillLayout').addEventListener('click', async () => {
       haptic(15);
-      const next = deviceState.lay === 'DE' ? 'US' : 'DE';
-      sendCommand(`SYS LAYOUT ${next}`);
+      const nextLay = deviceState.lay === 'DE' ? 'US' : 'DE';
+      deviceState.lay = nextLay;
+      updateStatusPills(true);
+      await sendCommand(`SYS LAYOUT ${nextLay}`);
+      showToast(`Layout: ${nextLay}-QWERT${nextLay === 'DE' ? 'Z' : 'Y'} gespeichert`);
+      setTimeout(() => readStatusFromDongle(false), 60);
     });
-    $('pillStealth').addEventListener('click', () => {
+
+    $('pillStealth').addEventListener('click', async () => {
       haptic(15);
-      const next = deviceState.stealth ? 0 : 1;
-      sendCommand(`SYS STEALTH ${next}`);
+      const nextStl = deviceState.stealth ? 0 : 1;
+      deviceState.stealth = nextStl;
+      updateStatusPills(false);
+      await sendCommand(`SYS STEALTH ${nextStl}`);
+      showToast(nextStl ? 'Stealth: Display & LED AUS' : 'Display & LED wieder AN');
+      setTimeout(() => readStatusFromDongle(false), 60);
     });
 
     // Bottom Navigation Tabs
@@ -648,10 +759,40 @@
       });
     });
 
-    // Live Text Typer
+    // Live Text Typer & Inline Pause Chips
     const liveInput = $('liveTextInput');
     liveInput.addEventListener('input', () => {
       $('charCountBadge').textContent = `${liveInput.value.length} Zeichen`;
+    });
+
+    document.querySelectorAll('[data-insert]').forEach((chip) => {
+      chip.addEventListener('click', () => {
+        haptic(10);
+        insertAtCursor(liveInput, chip.dataset.insert);
+      });
+    });
+
+    $('btnInsertCustomPause').addEventListener('click', () => {
+      const msStr = prompt('Pause in Millisekunden eingeben (z.B. 250 oder 1500):', '500');
+      if (!msStr) return;
+      const ms = parseInt(msStr, 10);
+      if (isNaN(ms) || ms < 1 || ms > 30000) {
+        alert('Bitte einen Wert zwischen 1 und 30000 ms eingeben.');
+        return;
+      }
+      insertAtCursor(liveInput, `{W:${ms}}`);
+    });
+
+    $('selLiveTimingMode').addEventListener('change', () => {
+      const isCustom = $('selLiveTimingMode').value === 'custom';
+      $('wrapCustomCharPause').style.display = isCustom ? 'block' : 'none';
+    });
+
+    document.querySelectorAll('[data-mod-insert]').forEach((chip) => {
+      chip.addEventListener('click', () => {
+        haptic(10);
+        insertAtCursor($('modSnipText'), chip.dataset.modInsert);
+      });
     });
 
     $('btnSendLiveText').addEventListener('click', () => {
@@ -660,7 +801,12 @@
         showToast('Bitte zuerst Text eingeben');
         return;
       }
-      typeLongText(txt, $('chkAppendEnter').checked, $('chkClearBefore').checked);
+      typeLongText(
+        txt,
+        $('chkAppendEnter').checked,
+        $('chkClearBefore').checked,
+        $('selLiveTimingMode').value
+      );
     });
 
     $('btnPasteAndType').addEventListener('click', async () => {
@@ -672,7 +818,12 @@
         }
         liveInput.value = clip;
         $('charCountBadge').textContent = `${clip.length} Zeichen`;
-        await typeLongText(clip, $('chkAppendEnter').checked, $('chkClearBefore').checked);
+        await typeLongText(
+          clip,
+          $('chkAppendEnter').checked,
+          $('chkClearBefore').checked,
+          $('selLiveTimingMode').value
+        );
       } catch (_) {
         showToast('Bitte Text direkt in das Feld einfügen');
       }
@@ -796,44 +947,83 @@
     });
 
     // Jiggler & System Controls
-    $('btnJigglerOn').addEventListener('click', () => { haptic(15); sendCommand('J ON'); });
-    $('btnJigglerOff').addEventListener('click', () => { haptic(15); sendCommand('J OFF'); });
+    $('btnJigglerOn').addEventListener('click', async () => {
+      haptic(15);
+      deviceState.j = 1;
+      updateStatusPills(false);
+      await sendCommand('J ON');
+      setTimeout(() => readStatusFromDongle(false), 60);
+    });
 
-    $('btnSaveJiggleCfg').addEventListener('click', () => {
+    $('btnJigglerOff').addEventListener('click', async () => {
+      haptic(15);
+      deviceState.j = 0;
+      updateStatusPills(false);
+      await sendCommand('J OFF');
+      setTimeout(() => readStatusFromDongle(false), 60);
+    });
+
+    $('btnSaveJiggleCfg').addEventListener('click', async () => {
       const minS = parseInt($('inpJiggleMin').value, 10) || 30;
       const maxS = parseInt($('inpJiggleMax').value, 10) || 60;
       const mode = parseInt($('selJiggleMode').value, 10) || 0;
       const auto = $('chkJiggleAuto').checked ? 1 : 0;
       haptic(18);
-      sendCommand(`JCFG ${minS} ${maxS} ${mode} ${auto}`);
-      showToast('Jiggler-Konfiguration gespeichert');
+      await sendCommand(`JCFG ${minS} ${maxS} ${mode} ${auto}`);
+      showToast('Jiggler-Konfiguration im NVS gespeichert');
+      setTimeout(() => readStatusFromDongle(false), 60);
     });
 
-    $('selLayout').addEventListener('change', () => {
-      sendCommand(`SYS LAYOUT ${$('selLayout').value}`);
+    $('btnSaveKeyboardCfg').addEventListener('click', async () => {
+      const lay = $('selLayout').value;
+      const minD = Math.max(4, Math.min(500, parseInt($('inpKeyDelay').value, 10) || 12));
+      const rnd = $('chkRandomDelay').checked ? 1 : 0;
+      const maxD = Math.max(minD, Math.min(1000, parseInt($('inpKeyDelayMax').value, 10) || 55));
+      haptic(18);
+      deviceState.lay = lay;
+      deviceState.delay = minD;
+      deviceState.rnd = rnd;
+      deviceState.rmax = maxD;
+      updateStatusPills(false);
+      await sendCommand(`SYS LAYOUT ${lay}`);
+      await sendCommand(`SYS DELAY ${minD} ${rnd} ${maxD}`);
+      showToast('Tastaturlayout & Verzögerung im NVS gespeichert');
+      setTimeout(() => readStatusFromDongle(false), 60);
     });
 
-    $('inpKeyDelay').addEventListener('change', () => {
-      const d = parseInt($('inpKeyDelay').value, 10) || 10;
-      sendCommand(`SYS DELAY ${d}`);
+    $('btnDisplayOn').addEventListener('click', async () => {
+      haptic(15);
+      deviceState.stealth = 0;
+      updateStatusPills(false);
+      await sendCommand('SYS STEALTH 0');
+      showToast('Display & LED eingeschaltet');
+      setTimeout(() => readStatusFromDongle(false), 60);
     });
 
-    $('btnSavePin').addEventListener('click', () => {
+    $('btnDisplayOff').addEventListener('click', async () => {
+      haptic(15);
+      deviceState.stealth = 1;
+      updateStatusPills(false);
+      await sendCommand('SYS STEALTH 1');
+      showToast('Stealth: Display & LED ausgeschaltet');
+      setTimeout(() => readStatusFromDongle(false), 60);
+    });
+
+    $('btnSavePin').addEventListener('click', async () => {
       const pin = parseInt($('inpBlePin').value, 10);
       if (isNaN(pin) || pin < 100000 || pin > 999999) {
         alert('Bitte eine 6-stellige PIN zwischen 100000 und 999999 eingeben.');
         return;
       }
-      sendCommand(`SYS PIN ${pin}`);
+      await sendCommand(`SYS PIN ${pin}`);
       showToast(`Neue feste PIN: ${pin}`);
+      setTimeout(() => readStatusFromDongle(false), 60);
     });
 
-    $('btnToggleStealth').addEventListener('click', () => {
-      const next = deviceState.stealth ? 0 : 1;
-      sendCommand(`SYS STEALTH ${next}`);
+    $('btnRequestStatus').addEventListener('click', async () => {
+      await sendCommand('SYS STATUS');
+      await readStatusFromDongle(true);
     });
-
-    $('btnRequestStatus').addEventListener('click', () => sendCommand('SYS STATUS'));
 
     $('btnBootloader').addEventListener('click', () => {
       if (confirm('T-Dongle S3 jetzt in den USB-Flash-Modus (Bootloader) neustarten?\n\nDer Dongle meldet sich danach als COM-Port am PC an.')) {

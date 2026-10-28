@@ -23,6 +23,7 @@ DeviceSettings cfg;
 static uint32_t btnDownAt = 0;
 static bool bootloaderTriggered = false;
 static bool sendCustomReply = false;
+static uint32_t lastBleStatSec = 0xFFFFFFFFUL;
 
 // ---- Klassische Schnell-Makros (M1..M3) ----
 static MacroStep m1steps[] = {
@@ -49,11 +50,11 @@ static void updateStatusLed() {
 }
 
 static void sendStatusJson() {
-    char buf[256];
+    char buf[280];
     uint32_t now = millis();
     snprintf(
         buf, sizeof(buf),
-        "STAT {\"j\":%d,\"min\":%u,\"max\":%u,\"mode\":%u,\"auto\":%d,\"lay\":\"%s\",\"delay\":%u,\"stealth\":%d,\"cnt\":%lu,\"next\":%lu,\"pin\":%lu}",
+        "STAT {\"j\":%d,\"min\":%u,\"max\":%u,\"mode\":%u,\"auto\":%d,\"lay\":\"%s\",\"delay\":%u,\"rnd\":%d,\"rmax\":%u,\"stealth\":%d,\"cnt\":%lu,\"next\":%lu,\"pin\":%lu}",
         jiggler.active() ? 1 : 0,
         (unsigned)cfg.jiggleMinSec,
         (unsigned)cfg.jiggleMaxSec,
@@ -61,12 +62,14 @@ static void sendStatusJson() {
         cfg.jiggleAutoStart ? 1 : 0,
         (cfg.layout == KeyboardLayout::DE_QWERTZ) ? "DE" : "US",
         (unsigned)cfg.keyDelayMs,
+        cfg.randomDelay ? 1 : 0,
+        (unsigned)cfg.keyDelayMaxMs,
         cfg.stealthMode ? 1 : 0,
         (unsigned long)jiggler.count(),
         (unsigned long)(jiggler.msUntilNext(now) / 1000UL),
         (unsigned long)cfg.blePin
     );
-    bleSend(buf);
+    bleSetStatus(buf);
     sendCustomReply = true;
 }
 
@@ -77,7 +80,7 @@ static void sendSnippetList() {
         if (storageGetSnippet(i, slot)) {
             snprintf(line, sizeof(line), "SNIP %u|%s|%s", (unsigned)i, slot.title, slot.text);
             bleSend(line);
-            delay(8);
+            delay(12);
         }
     }
     bleSend("SNIP END");
@@ -96,7 +99,7 @@ static void dispatch(const Action &a, void *) {
     uint32_t now = millis();
     switch (a.type) {
         case ActionType::TypeText:
-            usbHidTypeText(a.cstr(), cfg.layout, cfg.keyDelayMs);
+            usbHidTypeText(a.cstr(), cfg.layout, cfg.keyDelayMs, cfg.randomDelay, cfg.keyDelayMaxMs);
             break;
 
         case ActionType::Combo:
@@ -141,7 +144,7 @@ static void dispatch(const Action &a, void *) {
             } else if (a.key == 'R') {
                 SnippetSlot s;
                 if (storageGetSnippet(slotId, s)) {
-                    usbHidTypeText(s.text, cfg.layout, cfg.keyDelayMs);
+                    usbHidTypeText(s.text, cfg.layout, cfg.keyDelayMs, cfg.randomDelay, cfg.keyDelayMaxMs);
                 } else {
                     bleSend("ERR slot empty");
                     sendCustomReply = true;
@@ -170,8 +173,12 @@ static void dispatch(const Action &a, void *) {
                 sendStatusJson();
             } else if (a.key == 'D') {
                 cfg.keyDelayMs = (uint16_t)a.intParams[0];
+                cfg.randomDelay = (a.intParams[1] != 0);
+                cfg.keyDelayMaxMs = (uint16_t)a.intParams[2];
                 storageSaveSettings(cfg);
                 sendStatusJson();
+            } else if (a.key == 'W') {
+                delay((uint32_t)a.intParams[0]);
             } else if (a.key == 'P') {
                 cfg.blePin = (uint32_t)a.intParams[0];
                 storageSaveSettings(cfg);
@@ -189,7 +196,6 @@ static void dispatch(const Action &a, void *) {
 }
 
 static void onBleLine(const char *line, void *) {
-    // Mausbewegungen (M dx dy) nicht auf dem Display aufblitzen lassen (Performance)
     if (!(line[0] == 'M' && line[1] == ' ') && strcmp(line, "SYS STATUS") != 0) {
         uiFlashCommand(line);
     }
@@ -221,6 +227,7 @@ void setup() {
     jiggler.configure(now, cfg.jiggleMinSec, cfg.jiggleMaxSec, cfg.jiggleMode);
     jiggler.setActive(now, cfg.jiggleAutoStart);
     updateStatusLed();
+    sendStatusJson();
 }
 
 void loop() {
@@ -248,14 +255,15 @@ void loop() {
                 storageSaveSettings(cfg);
                 uiSetStealth(cfg.stealthMode);
                 updateStatusLed();
+                sendStatusJson();
             } else if (held >= 30) {
                 jiggler.toggle(now);
                 updateStatusLed();
+                sendStatusJson();
             }
         }
     }
 
-    // Eingehende BLE-Befehle auf dem Haupt-Core verarbeiten
     blePoll();
 
     int8_t dx, dy;
@@ -271,6 +279,17 @@ void loop() {
     if (ble != lastBle) {
         lastBle = ble;
         uiSetBleStatus(ble, cfg.blePin);
+        if (ble) {
+            sendStatusJson();
+        }
+    }
+
+    // Jede Sekunde den aktuellen Status (Countdown & Zähler) für BLE aktualisieren
+    if (now / 1000 != lastBleStatSec) {
+        lastBleStatSec = now / 1000;
+        if (ble) {
+            sendStatusJson();
+        }
     }
 
     uiTick(now, jiggler.active(), jiggler.msUntilNext(now) / 1000, jiggler.count());

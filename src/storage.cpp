@@ -7,6 +7,7 @@
 static Preferences prefs;
 static const char *NS_CFG = "tdongle_cfg";
 static const char *NS_SNIP = "tdongle_snp";
+static constexpr uint8_t CFG_SCHEMA_VER = 2;
 
 static void seedDefaultSnippets() {
     prefs.begin(NS_SNIP, false);
@@ -16,7 +17,7 @@ static void seedDefaultSnippets() {
         storageSetSnippet(0, "Grussformel", "Mit freundlichen Gruessen\\n");
         storageSetSnippet(1, "Rueckruf", "Bitte um kurzen Rueckruf bei Gelegenheit. Danke!");
         storageSetSnippet(2, "Termin OK", "Vielen Dank fuer die Einladung, der Termin passt bei mir.");
-        storageSetSnippet(3, "Git Status", "git status\\n");
+        storageSetSnippet(3, "Login-Demo", "benutzer{TAB}{W:300}geheim\\n");
     } else {
         prefs.end();
     }
@@ -24,16 +25,33 @@ static void seedDefaultSnippets() {
 
 void storageBegin(DeviceSettings &outSettings) {
     prefs.begin(NS_CFG, false);
+    uint8_t ver = prefs.getUChar("ver", 0);
+    if (ver != CFG_SCHEMA_VER) {
+        // Einmalige Migration auf Schema v2: Display wieder aktivieren & DE-Layout als Startwert
+        prefs.putUChar("ver", CFG_SCHEMA_VER);
+        prefs.putBool("stealth", false);
+        prefs.putUChar("layout", 0);
+    }
+
     outSettings.blePin = prefs.getUInt("pin", DEFAULT_BLE_PIN);
     if (outSettings.blePin < 100000 || outSettings.blePin > 999999) {
         outSettings.blePin = DEFAULT_BLE_PIN;
     }
     uint8_t lay = prefs.getUChar("layout", 0);
     outSettings.layout = (lay == 1) ? KeyboardLayout::US_QWERTY : KeyboardLayout::DE_QWERTZ;
-    outSettings.keyDelayMs = prefs.getUShort("delay", 10);
-    if (outSettings.keyDelayMs < 1 || outSettings.keyDelayMs > 250) {
-        outSettings.keyDelayMs = 10;
+    outSettings.keyDelayMs = prefs.getUShort("delay", 12);
+    if (outSettings.keyDelayMs < 2 || outSettings.keyDelayMs > 500) {
+        outSettings.keyDelayMs = 12;
     }
+    outSettings.randomDelay = prefs.getBool("rnd_dly", false);
+    outSettings.keyDelayMaxMs = prefs.getUShort("dly_max", 55);
+    if (outSettings.keyDelayMaxMs < outSettings.keyDelayMs) {
+        outSettings.keyDelayMaxMs = outSettings.keyDelayMs + 25;
+    }
+    if (outSettings.keyDelayMaxMs > 1000) {
+        outSettings.keyDelayMaxMs = 1000;
+    }
+
     outSettings.jiggleMinSec = prefs.getUShort("jmin", 30);
     outSettings.jiggleMaxSec = prefs.getUShort("jmax", 60);
     if (outSettings.jiggleMinSec < 2) outSettings.jiggleMinSec = 2;
@@ -52,9 +70,12 @@ void storageBegin(DeviceSettings &outSettings) {
 
 void storageSaveSettings(const DeviceSettings &settings) {
     prefs.begin(NS_CFG, false);
+    prefs.putUChar("ver", CFG_SCHEMA_VER);
     prefs.putUInt("pin", settings.blePin);
     prefs.putUChar("layout", (uint8_t)settings.layout);
     prefs.putUShort("delay", settings.keyDelayMs);
+    prefs.putBool("rnd_dly", settings.randomDelay);
+    prefs.putUShort("dly_max", settings.keyDelayMaxMs);
     prefs.putUShort("jmin", settings.jiggleMinSec);
     prefs.putUShort("jmax", settings.jiggleMaxSec);
     prefs.putUChar("jmode", (uint8_t)settings.jiggleMode);

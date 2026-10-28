@@ -30,13 +30,13 @@
     </div>
 
     <div class="status-bar">
-      <button class="status-pill" id="pillJiggler" title="Jiggler umschalten">
-        <span id="pillJigglerText">Jiggler: --</span>
+      <button class="status-pill active-green" id="pillJiggler" title="Antippen zum Umschalten (Jiggler AN / PAUSE)">
+        <span id="pillJigglerText">Jiggler: AN (30s • #0)</span>
       </button>
-      <button class="status-pill" id="pillLayout" title="Tastaturlayout wechseln">
+      <button class="status-pill active-blue" id="pillLayout" title="Antippen zum Umschalten (DE-QWERTZ / US-QWERTY)">
         <span id="pillLayoutText">Layout: DE-QWERTZ</span>
       </button>
-      <button class="status-pill" id="pillStealth" title="Stealth-Modus (Display & LED aus)">
+      <button class="status-pill" id="pillStealth" title="Antippen zum Umschalten (Display AN / Stealth DUNKEL)">
         <span id="pillStealthText">Display: AN</span>
       </button>
     </div>
@@ -50,10 +50,44 @@
       <!-- Live Text Typer -->
       <div class="card">
         <div class="card-header">
-          <h2 class="card-title">⌨️ Direkt-Text tippen</h2>
+          <h2 class="card-title">⌨️ Direkt-Text &amp; Pausen-Steuerung</h2>
           <span class="badge" id="charCountBadge">0 Zeichen</span>
         </div>
-        <textarea id="liveTextInput" placeholder="Text hier eingeben, diktieren oder einfügen (Umlaute äöüß, @, \, |, € werden im DE-Layout getippt)..."></textarea>
+        <textarea id="liveTextInput" placeholder="Text hier eingeben... Nutze die Bausteine unten für Pausen z.B. {W:500} oder {TAB} zwischen Wörtern!"></textarea>
+
+        <!-- Baustein-Leiste für manuelle Pausen & Spezialtasten -->
+        <div style="margin-top:8px;">
+          <span class="field-label">⏱ Manuelle Pause / Taste an Cursorposition einfügen:</span>
+          <div class="chip-bar" style="margin-bottom:4px;">
+            <button class="chip" data-insert="{W:100}">⏱ +100ms</button>
+            <button class="chip" data-insert="{W:500}">⏱ +500ms</button>
+            <button class="chip" data-insert="{W:1000}">⏱ +1 Sek.</button>
+            <button class="chip" data-insert="{W:3000}">⏱ +3 Sek.</button>
+            <button class="chip" id="btnInsertCustomPause">⏱ +Eigene Pause…</button>
+            <button class="chip" data-insert="{TAB}">⇥ +Tab</button>
+            <button class="chip" data-insert="{ENTER}">↵ +Enter</button>
+            <button class="chip" data-insert="{ESC}">⎋ +Esc</button>
+          </div>
+        </div>
+
+        <!-- Optionale Pause zwischen jedem einzelnen Tastenanschlag -->
+        <div class="form-row" style="margin-top:6px; margin-bottom:6px;">
+          <div>
+            <label class="field-label">Tipp-Modus für diesen Text</label>
+            <select id="selLiveTimingMode">
+              <option value="dongle">Dongle-Standard nutzen</option>
+              <option value="human">🎲 Realistisch (Random 20–75 ms)</option>
+              <option value="fast">⚡ Schnell (10 ms fest)</option>
+              <option value="slow">🐢 Langsam (90 ms zwischen Tasten)</option>
+              <option value="custom">⏱ Manuelle Pause je Taste (ms)…</option>
+            </select>
+          </div>
+          <div id="wrapCustomCharPause" style="display:none;">
+            <label class="field-label">Pause je Taste (ms)</label>
+            <input type="number" id="inpCustomCharPause" min="5" max="2000" value="120">
+          </div>
+        </div>
+
         <div class="checkbox-row">
           <label><input type="checkbox" id="chkAppendEnter" checked> Enter (↵) am Ende senden</label>
           <label><input type="checkbox" id="chkClearBefore"> Vorher Strg+A &amp; Entf</label>
@@ -77,7 +111,7 @@
           <button class="chip" data-cat="E-Mail">E-Mail</button>
           <button class="chip" data-cat="Befehle">Befehle</button>
           <button class="chip" data-cat="Vorlagen">Vorlagen</button>
-          <button class="chip" data-cat="Logins">Logins / IDs</button>
+          <button class="chip" data-cat="Logins">Logins / Abläufe</button>
         </div>
 
         <div class="snippet-list" id="snippetList"></div>
@@ -308,30 +342,46 @@
           <label><input type="checkbox" id="chkJiggleAuto" checked> Automatisch starten beim Einstecken in USB</label>
         </div>
 
-        <button class="btn btn-primary" id="btnSaveJiggleCfg" style="width:100%;">💾 Jiggler-Konfiguration speichern</button>
+        <button class="btn btn-primary" id="btnSaveJiggleCfg" style="width:100%;">💾 Jiggler-Konfiguration auf Dongle speichern</button>
       </div>
 
-      <!-- Keyboard, Stealth & Security -->
+      <!-- Keyboard, Random Delay, Stealth & Security -->
       <div class="card">
         <div class="card-header">
-          <h2 class="card-title">🛡️ Tastaturlayout, Tarnung &amp; PIN</h2>
+          <h2 class="card-title">🛡️ Tastaturlayout, Tipp-Verhalten &amp; Tarnung</h2>
+        </div>
+
+        <div style="margin-bottom: 10px;">
+          <label class="field-label">PC-Tastaturlayout (wird dauerhaft im NVS gespeichert)</label>
+          <select id="selLayout">
+            <option value="DE">Deutsch (DE-QWERTZ inkl. äöüß, @, \, |, €)</option>
+            <option value="US">Englisch (US-QWERTY)</option>
+          </select>
+        </div>
+
+        <div class="checkbox-row">
+          <label><input type="checkbox" id="chkRandomDelay"> 🎲 Zufällige Tastaturverzögerung (realistisches menschliches Tippen)</label>
         </div>
 
         <div class="form-row">
           <div>
-            <label class="field-label">PC-Tastaturlayout</label>
-            <select id="selLayout">
-              <option value="DE">Deutsch (DE-QWERTZ)</option>
-              <option value="US">Englisch (US-QWERTY)</option>
-            </select>
+            <label class="field-label" id="lblMinDelay">Tipp-Verzögerung Min (ms)</label>
+            <input type="number" id="inpKeyDelay" min="4" max="500" value="12">
           </div>
           <div>
-            <label class="field-label">Tipp-Verzögerung (ms)</label>
-            <input type="number" id="inpKeyDelay" min="2" max="200" value="10">
+            <label class="field-label">Max. bei Random (ms)</label>
+            <input type="number" id="inpKeyDelayMax" min="10" max="1000" value="55">
           </div>
         </div>
 
-        <div class="form-row" style="align-items: end;">
+        <button class="btn btn-primary" id="btnSaveKeyboardCfg" style="width:100%; margin-bottom:12px;">💾 Tastatur-Einstellungen auf Dongle speichern</button>
+
+        <div class="btn-row" style="margin-bottom:12px;">
+          <button class="btn btn-accent" id="btnDisplayOn">💡 Display &amp; LED AN</button>
+          <button class="btn" id="btnDisplayOff">🕶️ Stealth (Display AUS)</button>
+        </div>
+
+        <div class="form-row" style="align-items: end; margin-bottom:0;">
           <div>
             <label class="field-label">Feste BLE-PIN (6 Ziffern)</label>
             <input type="number" id="inpBlePin" min="100000" max="999999" value="400400">
@@ -339,10 +389,6 @@
           <div>
             <button class="btn" id="btnSavePin" style="width:100%;">PIN speichern</button>
           </div>
-        </div>
-
-        <div class="btn-row" style="margin-top:8px;">
-          <button class="btn" id="btnToggleStealth">🕶️ Stealth-Modus (Display &amp; LED aus/an)</button>
         </div>
       </div>
 
@@ -355,7 +401,7 @@
           Versetzt den T-Dongle S3 direkt per Software in den ESP32-S3 Download-Modus (COM-Port wird sichtbar), ohne beim Einstecken den kleinen Knopf drücken zu müssen.
         </p>
         <div class="btn-row">
-          <button class="btn" id="btnRequestStatus">📊 Status abfragen</button>
+          <button class="btn" id="btnRequestStatus">📊 Status synchronisieren</button>
           <button class="btn btn-danger" id="btnBootloader">⚡ In Flash-Modus (Bootloader) starten</button>
         </div>
 
@@ -386,7 +432,7 @@
             <option value="E-Mail">E-Mail</option>
             <option value="Befehle">Befehle</option>
             <option value="Vorlagen">Vorlagen</option>
-            <option value="Logins">Logins / IDs</option>
+            <option value="Logins">Logins / Abläufe</option>
           </select>
         </div>
         <div>
@@ -409,8 +455,15 @@
         </div>
       </div>
       <div>
-        <label class="field-label">Textinhalt (Mehrzeilig möglich)</label>
+        <label class="field-label">Textinhalt (Mehrzeilig &amp; mit Pausen wie {W:500})</label>
         <textarea id="modSnipText" placeholder="Text des Moduls..."></textarea>
+        <div class="chip-bar" style="margin-top:6px; margin-bottom:0;">
+          <button class="chip" data-mod-insert="{W:200}">⏱ +200ms</button>
+          <button class="chip" data-mod-insert="{W:500}">⏱ +500ms</button>
+          <button class="chip" data-mod-insert="{W:1000}">⏱ +1s</button>
+          <button class="chip" data-mod-insert="{TAB}">⇥ +Tab</button>
+          <button class="chip" data-mod-insert="{ENTER}">↵ +Enter</button>
+        </div>
       </div>
       <div class="checkbox-row" style="margin:0;">
         <label><input type="checkbox" id="modSnipEnter" checked> Beim Tippen automatisch Enter anhängen</label>

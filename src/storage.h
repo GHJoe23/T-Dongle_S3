@@ -9,7 +9,9 @@ constexpr uint32_t DEFAULT_BLE_PIN = 400400; // Feste Standard-PIN (K400 Plus)
 struct DeviceSettings {
     uint32_t blePin = DEFAULT_BLE_PIN;
     KeyboardLayout layout = KeyboardLayout::DE_QWERTZ;
-    uint16_t keyDelayMs = 10;
+    uint16_t keyDelayMs = 12;
+    bool randomDelay = false;
+    uint16_t keyDelayMaxMs = 55;
     uint16_t jiggleMinSec = 30;
     uint16_t jiggleMaxSec = 60;
     JiggleMode jiggleMode = JiggleMode::PING_PONG;

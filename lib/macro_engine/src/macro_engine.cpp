@@ -236,10 +236,30 @@ bool MacroEngine::parseSystemCmd(const char *s, Action &out) {
         return true;
     }
     if (strncmp(s, "DELAY ", 6) == 0) {
-        int d = atoi(s + 6);
-        if (d < 1 || d > 250) return false;
+        char buf[48];
+        strncpy(buf, s + 6, sizeof(buf) - 1);
+        buf[sizeof(buf) - 1] = 0;
+        char *p1 = strtok(buf, " ");
+        char *p2 = strtok(nullptr, " ");
+        char *p3 = strtok(nullptr, " ");
+        if (!p1) return false;
+        int d = atoi(p1);
+        if (d < 1 || d > 500) return false;
+        int rnd = p2 ? atoi(p2) : 0;
+        int dmax = p3 ? atoi(p3) : (d + 35);
+        if (dmax < d) dmax = d;
+        if (dmax > 1000) dmax = 1000;
         out.key = 'D';
         out.intParams[0] = d;
+        out.intParams[1] = rnd ? 1 : 0;
+        out.intParams[2] = dmax;
+        return true;
+    }
+    if (strncmp(s, "WAIT ", 5) == 0) {
+        int ms = atoi(s + 5);
+        if (ms < 1 || ms > 30000) return false;
+        out.key = 'W';
+        out.intParams[0] = ms;
         return true;
     }
     if (strncmp(s, "PIN ", 4) == 0) {

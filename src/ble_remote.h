@@ -6,5 +6,6 @@ typedef void (*BleLineCallback)(const char *line, void *ctx);
 void bleBegin(uint32_t passkey, BleLineCallback onLine, void *ctx);
 void blePoll();
 void bleSend(const char *msg);
+void bleSetStatus(const char *statusJsonLine);
 void bleUpdatePasskey(uint32_t passkey);
 bool bleConnected();

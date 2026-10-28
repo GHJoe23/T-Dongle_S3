@@ -1107,14 +1107,18 @@
   let geminiCfg = {
     apiKey: '',
     engine: 'smart_vad',
-    model: 'gemini-2.5-flash',
+    model: '',
     customModel: '',
     style: 'orig',
     clean: true,
     commands: true,
     autoSpace: true,
-    vadSilenceMs: 750,
-    outputMode: 'live' // 'live' | 'preview'
+    vadSilenceMs: 800,
+    noiseGatePct: 28,
+    outputMode: 'live', // 'live' | 'preview'
+    cachedModels: [],
+    totalAudioSec: 0,
+    totalTokens: 0
   };
 
   let voiceActive = false;
@@ -1125,6 +1129,7 @@
   let preRollChunks = [];
   let vadActiveChunks = [];
   let vadActiveSampleCount = 0;
+  let vadVoicedSampleCount = 0;
   let vadSpeaking = false;
   let vadLastVoiceAt = 0;
   let vadSegmentStartAt = 0;
@@ -1139,6 +1144,9 @@
       if (raw) {
         const parsed = JSON.parse(raw);
         geminiCfg = { ...geminiCfg, ...parsed };
+        if (!geminiCfg.noiseGatePct || geminiCfg.noiseGatePct < 8) {
+          geminiCfg.noiseGatePct = 28;
+        }
       }
     } catch (_) {}
   }
@@ -1149,12 +1157,36 @@
     } catch (_) {}
   }
 
+  function updateUsageStatsUi() {
+    const el = $('voiceUsageStats');
+    if (!el) return;
+    const sec = (geminiCfg.totalAudioSec || 0).toFixed(1);
+    const tok = Math.round(geminiCfg.totalTokens || 0);
+    const usd = (tok * 0.00000015).toFixed(4);
+    el.textContent = `📊 Verbrauch: ${sec}s Audio • ~${tok} Tokens • ~$${usd} (Antippen = Reset)`;
+  }
+
   function getSelectedGeminiModel() {
     const custom = ($('inpCustomGeminiModel').value || '').trim();
     if (custom) {
       return custom.replace(/^models\//, '');
     }
-    return ($('selGeminiModel').value || 'gemini-2.5-flash').replace(/^models\//, '');
+    const selVal = ($('selGeminiModel').value || '').trim().replace(/^models\//, '');
+    if (selVal) return selVal;
+    if (Array.isArray(geminiCfg.cachedModels) && geminiCfg.cachedModels.length > 0) {
+      return geminiCfg.cachedModels[0].id;
+    }
+    return 'gemini-2.5-flash';
+  }
+
+  function getFallback3xModel(excludeModel) {
+    if (!Array.isArray(geminiCfg.cachedModels) || geminiCfg.cachedModels.length === 0) {
+      return null;
+    }
+    const candidates = geminiCfg.cachedModels.filter(
+      (m) => m.id !== excludeModel && (m.id.includes('flash-lite') || m.id.includes('flash'))
+    );
+    return candidates.length > 0 ? candidates[0].id : null;
   }
 
   function setVoiceStatus(label, isError = false) {
@@ -1272,14 +1304,17 @@
 
   function buildSystemInstruction() {
     const parts = [
-      'Du bist eine hochpräzise Echtzeit-Diktier-Engine für eine Tastatur.',
-      'Transkribiere die eingesprochene Audioaufnahme exakt.',
-      'WICHTIG: Gib AUSSCHLIESSLICH den transkribierten bzw. übersetzten Zieltext zurück – keinerlei Einleitungen, keine Anführungszeichen, keine Erklärungen.',
-      'Wenn in der Audioaufnahme nur Stille, Atmen oder Hintergrundrauschen ohne verständliche Wörter zu hören ist, gib exakt einen leeren String zurück.'
+      'Du bist eine professionelle KI-Diktier-Engine für eine PC-Tastatur.',
+      'WICHTIG: Gib AUSSCHLIESSLICH den fertigen Diktat-Text zurück – keinerlei Einleitungen, keine Anführungszeichen, keine Metakommentare.',
+      'STRIKTER STÖRFILTER: Wenn in der Audioaufnahme nur Stille, Atmen, Räuspern, Husten, Tastaturklappern, Rascheln oder unverständliches Gemurmel ohne klar gesprochene Wörter zu hören sind, antworte AUSSCHLIESSLICH mit dem exakten Wort [STILLE]. Erfinde oder errate NIEMALS Wörter aus Nebengeräuschen!'
     ];
 
     if (geminiCfg.clean) {
-      parts.push('Entferne gesprochene Fülllaute wie "äh", "ähm", "hm" sowie versehentliche Wortstottereien und setze korrekte Satzzeichen (Kommas, Punkte, Fragezeichen) und Groß-/Kleinschreibung.');
+      parts.push(
+        'STRIKTE FÜLLWORT-BEREINIGUNG & SATZGLÄTTUNG: Schreibe NIEMALS Verzögerungslaute wie "äh", "ähm", "hm", "mhm" mit! Entferne alle Fülllaute, Stotterer, Wortdopplungen und abgebrochenen Satzanfänge restlos. Wenn der Sprecher sich mitten im Satz korrigiert oder holprig spricht, glätte das Gesprochene zu einem grammatikalisch sauberen, flüssigen Satz mit perfekter Rechtschreibung, Groß-/Kleinschreibung und Kommasetzung.'
+      );
+    } else {
+      parts.push('Transkribiere die gesprochenen Wörter mit korrekter Rechtschreibung und Satzzeichen.');
     }
 
     if (geminiCfg.commands) {
@@ -1317,6 +1352,30 @@
     let cleaned = (rawText || '').trim();
     if (!cleaned) return;
 
+    // Anti-Halluzinations-Tag und reine Geräusch-Platzhalter verwerfen
+    if (
+      cleaned.toUpperCase().includes('[STILLE]') ||
+      cleaned.toUpperCase() === 'STILLE' ||
+      cleaned === '.' ||
+      cleaned === '...'
+    ) {
+      if (voiceActive) {
+        setVoiceInterim('🔇 Nebengeräusch / Stille herausgefiltert – sprich weiter…');
+      }
+      return;
+    }
+
+    // Zusätzlicher Client-Sicherheitsfilter gegen übriggebliebene "äh" / "ähm"
+    if (geminiCfg.clean) {
+      cleaned = cleaned
+        .replace(/(^|\s)(ähm+|äh+|hm+|mhm+)(?=\s|[,.!?;:]|$)[,\s]*/gi, '$1')
+        .replace(/\s{2,}/g, ' ')
+        .replace(/\s+([,.!?;:])/g, '$1')
+        .trim();
+    }
+
+    if (!cleaned) return;
+
     cleaned = applySpokenCommands(cleaned);
     const needSpace = geminiCfg.autoSpace && !cleaned.endsWith('{ENTER}') && !cleaned.endsWith('{TAB}');
     const finalOut = needSpace ? cleaned + ' ' : cleaned;
@@ -1347,7 +1406,8 @@
     if (!chunksToProcess || chunksToProcess.length === 0) return;
     let totalSamples = 0;
     for (const c of chunksToProcess) totalSamples += c.length;
-    const durSec = (totalSamples / 16000).toFixed(1);
+    const durNum = totalSamples / 16000;
+    const durSec = durNum.toFixed(1);
 
     const wavB64 = encodeWavBase64(chunksToProcess, 16000);
     const apiKey = geminiCfg.apiKey.trim();
@@ -1356,7 +1416,7 @@
 
     pendingGeminiTasks++;
     setVoiceStatus(`Gemini (${pendingGeminiTasks})…`);
-    setVoiceInterim(`⚡ Sende ${durSec}s Audio an Gemini (${primaryModel})…`);
+    setVoiceInterim(`⚡ Sende ${durSec}s Sprache an ${primaryModel}…`);
 
     voiceQueue = voiceQueue
       .then(async () => {
@@ -1377,7 +1437,7 @@
                     }
                   },
                   {
-                    text: 'Transkribiere dieses Audiosegment exakt gemäß System-Anweisung.'
+                    text: 'Diktat-Audio verarbeiten gemäß System-Anweisung (bei Geräusch/Stille: [STILLE]).'
                   }
                 ]
               }
@@ -1406,14 +1466,21 @@
           try {
             data = await callGeminiAudio(primaryModel);
           } catch (firstErr) {
-            // Automatischer Fallback auf gemini-2.5-flash, falls ein Spezialmodell kein Audio-Input akzeptiert
-            if (primaryModel !== 'gemini-2.5-flash') {
-              addLog('RX', `Fallback von ${primaryModel} auf gemini-2.5-flash (${firstErr.message})`);
-              data = await callGeminiAudio('gemini-2.5-flash');
+            const altModel = getFallback3xModel(primaryModel);
+            if (altModel) {
+              addLog('RX', `Fallback von ${primaryModel} auf ${altModel} (${firstErr.message})`);
+              data = await callGeminiAudio(altModel);
             } else {
               throw firstErr;
             }
           }
+
+          // Audio-Sekunden & geschätzte Tokens verbuchen (~32 Tokens/Sekunde Audio + Prompt/Output)
+          const usedTokens = data.usageMetadata?.totalTokenCount || Math.round(durNum * 32 + 95);
+          geminiCfg.totalAudioSec = (geminiCfg.totalAudioSec || 0) + durNum;
+          geminiCfg.totalTokens = (geminiCfg.totalTokens || 0) + usedTokens;
+          saveGeminiCfg();
+          updateUsageStatsUi();
 
           const cand = data.candidates && data.candidates[0];
           const parts = cand && cand.content && cand.content.parts;
@@ -1441,16 +1508,24 @@
       .catch(() => {});
   }
 
-  function flushCurrentVadSegment() {
-    if (vadActiveChunks.length > 0 && vadActiveSampleCount > 1600) {
+  function flushCurrentVadSegment(forceEvenShort = false) {
+    // Mindestens 0.45 Sekunden echte Sprach-Samples über dem Noise-Gate (7200 Samples @ 16kHz),
+    // damit kurze Tippgeräusche, Atmen oder Knackser gar nicht erst an die API geschickt werden!
+    const minVoicedSamples = forceEvenShort ? 2400 : 7200;
+    if (vadActiveChunks.length > 0 && vadVoicedSampleCount >= minVoicedSamples) {
       const copy = vadActiveChunks;
       vadActiveChunks = [];
       vadActiveSampleCount = 0;
+      vadVoicedSampleCount = 0;
       vadSpeaking = false;
       dispatchVadAudioSegment(copy);
     } else {
+      if (vadSpeaking && vadVoicedSampleCount > 0) {
+        setVoiceInterim('🔇 Kurzes Nebengeräusch (< 0.45s) ignoriert – spart API-Tokens…');
+      }
       vadActiveChunks = [];
       vadActiveSampleCount = 0;
+      vadVoicedSampleCount = 0;
       vadSpeaking = false;
     }
   }
@@ -1601,6 +1676,7 @@
       preRollChunks = [];
       vadActiveChunks = [];
       vadActiveSampleCount = 0;
+      vadVoicedSampleCount = 0;
       vadSpeaking = false;
       wsChunkAccum = [];
       wsChunkSamples = 0;
@@ -1611,20 +1687,19 @@
       $('voiceMicIcon').textContent = '⏹️';
       $('voiceBtnLabel').textContent = 'Diktat stoppen (läuft live)';
       setVoiceStatus('Hört zu…');
-      setVoiceInterim('🎙️ Mikrofon aktiv – sprich einfach los (kurze Pause sendet Satz)…');
+      setVoiceInterim('🎙️ Mikrofon aktiv – sprich über den roten Strich im Pegelbalken…');
       haptic(25);
 
       scriptNode.onaudioprocess = (audioEvt) => {
         if (!voiceActive) return;
         const inputBuf = audioEvt.inputBuffer.getChannelData(0);
 
-        // RMS-Pegel berechnen (höhere Empfindlichkeit für Android Voice-DSP)
         let sumSq = 0;
         for (let i = 0; i < inputBuf.length; i++) {
           sumSq += inputBuf[i] * inputBuf[i];
         }
         const rms = Math.sqrt(sumSq / inputBuf.length);
-        const pct = Math.min(100, Math.round(Math.pow(rms * 18, 0.72) * 100));
+        const pct = Math.min(100, Math.round(Math.pow(rms * 14, 0.72) * 100));
         const bar = $('voiceLevelBar');
         if (bar) bar.style.width = `${pct}%`;
 
@@ -1654,12 +1729,13 @@
           return;
         }
 
-        // Engine: smart_vad (Continuous PCM VAD mit 350ms Pre-Roll Ringbuffer)
-        const speechThreshold = 0.0038;
-        if (rms >= speechThreshold) {
+        // Engine: smart_vad mit einstellbarem Noise-Gate (roter Strich im Pegelbalken)
+        const gatePct = geminiCfg.noiseGatePct || 28;
+        if (pct >= gatePct) {
           if (!vadSpeaking) {
             vadSpeaking = true;
             vadSegmentStartAt = now;
+            vadVoicedSampleCount = 0;
             for (const pr of preRollChunks) {
               vadActiveChunks.push(pr);
               vadActiveSampleCount += pr.length;
@@ -1669,20 +1745,21 @@
           vadLastVoiceAt = now;
           vadActiveChunks.push(pcm16);
           vadActiveSampleCount += pcm16.length;
+          vadVoicedSampleCount += pcm16.length;
 
-          const sec = ((now - vadSegmentStartAt) / 1000).toFixed(1);
-          setVoiceInterim(`🗣️ Nehme Sprache auf (${sec}s) – kurz pausieren zum Senden…`);
+          const voicedSec = (vadVoicedSampleCount / 16000).toFixed(1);
+          setVoiceInterim(`🗣️ Sprache aktiv (${voicedSec}s über Gate) – kurz pausieren zum Senden…`);
 
-          // Auto-Flush nach 6 Sekunden durchgehendem Sprechen
-          if (now - vadSegmentStartAt >= 6000) {
-            flushCurrentVadSegment();
+          // Auto-Flush nach 7 Sekunden durchgehendem Sprechen
+          if (now - vadSegmentStartAt >= 7000) {
+            flushCurrentVadSegment(false);
           }
         } else {
           if (vadSpeaking) {
             vadActiveChunks.push(pcm16);
             vadActiveSampleCount += pcm16.length;
             if (now - vadLastVoiceAt >= geminiCfg.vadSilenceMs) {
-              flushCurrentVadSegment();
+              flushCurrentVadSegment(false);
             }
           } else {
             // Im Ruhezustand die letzten ~350ms als Pre-Roll im Ringpuffer behalten
@@ -1708,7 +1785,7 @@
     voiceActive = false;
 
     if (wasActive && geminiCfg.engine === 'smart_vad' && vadActiveChunks.length > 0) {
-      flushCurrentVadSegment();
+      flushCurrentVadSegment(true);
     }
 
     if (scriptNode) {
@@ -1738,32 +1815,76 @@
     if (pendingGeminiTasks === 0) setVoiceStatus('Bereit');
   }
 
+  function updateNoiseGateUi() {
+    const val = parseInt($('rangeNoiseGate').value, 10) || 15;
+    // Mappe Slider (5..45) auf visuelle Balken-Prozent (12%..68%)
+    const gatePct = Math.min(75, Math.max(10, Math.round(val * 1.65)));
+    geminiCfg.noiseGatePct = gatePct;
+    const marker = $('voiceGateMarker');
+    if (marker) marker.style.left = `${gatePct}%`;
+
+    let desc = 'Mittel';
+    if (val <= 9) desc = 'Empfindlich (Leise)';
+    else if (val <= 18) desc = 'Normal (${gatePct}%)';
+    else if (val <= 28) desc = 'Streng (Filtert Geräusche)';
+    else desc = 'Sehr streng (Nur laute Stimme)';
+    $('lblNoiseGate').textContent = `Noise-Gate: ${desc.replace('${gatePct}', gatePct)}`;
+  }
+
   function syncGeminiCfgFromUi() {
     geminiCfg.apiKey = ($('inpGeminiKey').value || '').trim();
     geminiCfg.engine = $('selVoiceEngine').value || 'smart_vad';
-    geminiCfg.model = $('selGeminiModel').value || 'gemini-2.5-flash';
+    if ($('selGeminiModel').value) {
+      geminiCfg.model = $('selGeminiModel').value;
+    }
     geminiCfg.customModel = ($('inpCustomGeminiModel').value || '').trim();
     geminiCfg.style = $('selVoiceStyle').value || 'orig';
     geminiCfg.clean = $('chkVoiceClean').checked;
     geminiCfg.commands = $('chkVoiceCommands').checked;
     geminiCfg.autoSpace = $('chkVoiceAutoSpace').checked;
-    geminiCfg.vadSilenceMs = parseInt($('rangeVadSilence').value, 10) || 750;
+    geminiCfg.vadSilenceMs = parseInt($('rangeVadSilence').value, 10) || 800;
+    updateNoiseGateUi();
     saveGeminiCfg();
+  }
+
+  function scoreModelForDictation(id) {
+    const verMatch = id.match(/gemini-(\d+(?:\.\d+)?)/);
+    const verNum = verMatch ? parseFloat(verMatch[1]) * 100 : 100;
+    let bonus = 0;
+    if (id.includes('flash-lite') || id.includes('-lite')) bonus += 35;
+    else if (id.includes('flash')) bonus += 25;
+    else if (id.includes('pro')) bonus += 10;
+    if (id.includes('exp') || id.includes('customtools')) bonus -= 15;
+    return verNum + bonus;
+  }
+
+  function populateModelDropdown(modelList, preferredSelectedId) {
+    if (!Array.isArray(modelList) || modelList.length === 0) return;
+    const sel = $('selGeminiModel');
+    sel.innerHTML = '';
+    modelList.forEach((m) => {
+      const opt = document.createElement('option');
+      opt.value = m.id;
+      const tag = m.hasBidi ? ' [Live-WS + Stream]' : ' [Smart-Stream]';
+      opt.textContent = `${m.id}${tag}`;
+      sel.appendChild(opt);
+    });
+    const ids = modelList.map((x) => x.id);
+    if (preferredSelectedId && ids.includes(preferredSelectedId)) {
+      sel.value = preferredSelectedId;
+    } else {
+      sel.value = modelList[0].id;
+    }
+    geminiCfg.model = sel.value;
   }
 
   function applyGeminiCfgToUi() {
     $('inpGeminiKey').value = geminiCfg.apiKey || '';
     $('selVoiceEngine').value = geminiCfg.engine || 'smart_vad';
-    if (
-      geminiCfg.model &&
-      (geminiCfg.model.includes('-tts') ||
-        geminiCfg.model.includes('image') ||
-        geminiCfg.model.includes('embedding') ||
-        geminiCfg.model.includes('robotics'))
-    ) {
-      geminiCfg.model = 'gemini-2.5-flash';
-    }
-    if (geminiCfg.model) {
+
+    if (Array.isArray(geminiCfg.cachedModels) && geminiCfg.cachedModels.length > 0) {
+      populateModelDropdown(geminiCfg.cachedModels, geminiCfg.model);
+    } else if (geminiCfg.model) {
       const sel = $('selGeminiModel');
       if (!Array.from(sel.options).some((o) => o.value === geminiCfg.model)) {
         const opt = document.createElement('option');
@@ -1773,16 +1894,25 @@
       }
       sel.value = geminiCfg.model;
     }
+
     $('inpCustomGeminiModel').value = geminiCfg.customModel || '';
     $('selVoiceStyle').value = geminiCfg.style || 'orig';
     $('chkVoiceClean').checked = !!geminiCfg.clean;
     $('chkVoiceCommands').checked = !!geminiCfg.commands;
     $('chkVoiceAutoSpace').checked = !!geminiCfg.autoSpace;
-    $('rangeVadSilence').value = String(geminiCfg.vadSilenceMs || 750);
-    $('lblVadSilence').textContent = `Sprechpause: ${((geminiCfg.vadSilenceMs || 750) / 1000).toFixed(1)}s`;
+    $('rangeVadSilence').value = String(geminiCfg.vadSilenceMs || 800);
+    $('lblVadSilence').textContent = `Sprechpause: ${((geminiCfg.vadSilenceMs || 800) / 1000).toFixed(1)}s`;
+
+    const sliderVal = Math.max(5, Math.min(45, Math.round((geminiCfg.noiseGatePct || 28) / 1.65)));
+    $('rangeNoiseGate').value = String(sliderVal);
+    updateNoiseGateUi();
     updateVoiceOutputModeUi();
+    updateUsageStatsUi();
+
     if (geminiCfg.apiKey) {
-      $('geminiKeyBadge').textContent = 'Key gespeichert ✓';
+      $('geminiKeyBadge').textContent = geminiCfg.cachedModels?.length
+        ? `Aktiv ✓ (${geminiCfg.cachedModels.length} Modelle)`
+        : 'Key gespeichert ✓';
       $('geminiKeyBadge').style.color = 'var(--primary)';
     }
   }
@@ -1793,13 +1923,13 @@
     $('btnVoiceModePreview').classList.toggle('btn-primary', !isLive);
   }
 
-  async function testKeyAndLoadModels() {
+  async function testKeyAndLoadModels(silent = false) {
     syncGeminiCfgFromUi();
     if (!geminiCfg.apiKey) {
-      alert('Bitte gib zuerst deinen Google Gemini API-Key ein.');
+      if (!silent) alert('Bitte gib zuerst deinen Google Gemini API-Key ein.');
       return;
     }
-    haptic(15);
+    if (!silent) haptic(15);
     $('geminiKeyBadge').textContent = 'Prüfe Key…';
     try {
       const resp = await fetch(
@@ -1825,54 +1955,26 @@
           !m.id.includes('image') &&
           !m.id.includes('embedding') &&
           !m.id.includes('vision') &&
-          !m.id.includes('robotics')
+          !m.id.includes('robotics') &&
+          !m.id.includes('aqa')
         );
 
       if (rawModels.length > 0) {
-        const preferredOrder = [
-          'gemini-2.5-flash',
-          'gemini-2.5-flash-lite',
-          'gemini-2.5-pro',
-          'gemini-2.0-flash',
-          'gemini-2.0-flash-exp'
-        ];
-        rawModels.sort((a, b) => {
-          const ia = preferredOrder.indexOf(a.id);
-          const ib = preferredOrder.indexOf(b.id);
-          if (ia >= 0 && ib >= 0) return ia - ib;
-          if (ia >= 0) return -1;
-          if (ib >= 0) return 1;
-          return b.id.localeCompare(a.id);
-        });
-
-        const sel = $('selGeminiModel');
-        const current = sel.value;
-        sel.innerHTML = '';
-        rawModels.forEach((m) => {
-          const opt = document.createElement('option');
-          opt.value = m.id;
-          const tag = m.hasBidi ? ' [Live-WS + Stream]' : ' [Smart-Stream]';
-          opt.textContent = `${m.id}${tag}`;
-          sel.appendChild(opt);
-        });
-
-        const ids = rawModels.map((x) => x.id);
-        if (ids.includes(current)) {
-          sel.value = current;
-        } else if (ids.includes('gemini-2.5-flash')) {
-          sel.value = 'gemini-2.5-flash';
-        } else {
-          sel.value = rawModels[0].id;
-        }
-        syncGeminiCfgFromUi();
+        // Sortiere höchste Versionsnummern (3.8 / 3.5 Flash-Lite & Flash) automatisch ganz nach oben!
+        rawModels.sort((a, b) => scoreModelForDictation(b.id) - scoreModelForDictation(a.id));
+        geminiCfg.cachedModels = rawModels;
+        populateModelDropdown(rawModels, geminiCfg.model);
+        saveGeminiCfg();
       }
-      $('geminiKeyBadge').textContent = `Aktiv ✓ (${rawModels.length} Audio-Modelle)`;
+      $('geminiKeyBadge').textContent = `Aktiv ✓ (${rawModels.length} Modelle)`;
       $('geminiKeyBadge').style.color = 'var(--primary)';
-      showToast(`API-Key gültig! ${rawModels.length} passende Gemini-Modelle geladen.`);
+      if (!silent) {
+        showToast(`Geladen! Top-Modell: ${ $('selGeminiModel').value }`);
+      }
     } catch (err) {
       $('geminiKeyBadge').textContent = 'Key ungültig';
       $('geminiKeyBadge').style.color = 'var(--danger)';
-      alert(`Gemini API-Fehler: ${err.message || err}`);
+      if (!silent) alert(`Gemini API-Fehler: ${err.message || err}`);
     }
   }
 
@@ -1927,6 +2029,10 @@
     loadGeminiCfg();
     applyGeminiCfgToUi();
 
+    if (geminiCfg.apiKey && (!geminiCfg.cachedModels || geminiCfg.cachedModels.length === 0)) {
+      testKeyAndLoadModels(true);
+    }
+
     $('btnVoiceModeLive').addEventListener('click', () => {
       haptic(12);
       geminiCfg.outputMode = 'live';
@@ -1955,8 +2061,8 @@
     $('btnVoiceFlushNow').addEventListener('click', () => {
       haptic(12);
       if (voiceActive && geminiCfg.engine === 'smart_vad') {
-        flushCurrentVadSegment();
-        showToast('Abschnitt an Gemini gesendet');
+        flushCurrentVadSegment(true);
+        showToast('Abschnitt sofort an Gemini gesendet');
       } else {
         showToast('Nur während laufendem Smart-Diktat aktiv');
       }
@@ -2010,13 +2116,27 @@
       setVoiceInterim('Transkript geleert.');
     });
 
+    $('voiceUsageStats').addEventListener('click', () => {
+      if (confirm('Audio- & Token-Verbrauchszähler auf 0 zurücksetzen?')) {
+        geminiCfg.totalAudioSec = 0;
+        geminiCfg.totalTokens = 0;
+        saveGeminiCfg();
+        updateUsageStatsUi();
+      }
+    });
+
     $('btnToggleKeyVis').addEventListener('click', () => {
       const inp = $('inpGeminiKey');
       inp.type = inp.type === 'password' ? 'text' : 'password';
     });
 
+    $('rangeNoiseGate').addEventListener('input', () => {
+      updateNoiseGateUi();
+      saveGeminiCfg();
+    });
+
     $('rangeVadSilence').addEventListener('input', () => {
-      const ms = parseInt($('rangeVadSilence').value, 10) || 750;
+      const ms = parseInt($('rangeVadSilence').value, 10) || 800;
       $('lblVadSilence').textContent = `Sprechpause: ${(ms / 1000).toFixed(1)}s`;
       syncGeminiCfgFromUi();
     });
@@ -2026,7 +2146,7 @@
       if (el) el.addEventListener('change', syncGeminiCfgFromUi);
     });
 
-    $('btnSaveAndTestGemini').addEventListener('click', testKeyAndLoadModels);
+    $('btnSaveAndTestGemini').addEventListener('click', () => testKeyAndLoadModels(false));
   }
 
   // Register Service Worker for offline PWA support

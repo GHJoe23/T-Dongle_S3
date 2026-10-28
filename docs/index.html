@@ -9,7 +9,7 @@
   <title>LogiControl K400+ • T-Dongle S3</title>
   <link rel="manifest" href="./manifest.json">
   <link rel="icon" type="image/svg+xml" href="./icon.svg">
-  <link rel="stylesheet" href="./style.css?v=7">
+  <link rel="stylesheet" href="./style.css?v=8">
 </head>
 <body>
 
@@ -158,10 +158,18 @@
             <span class="mic-icon" id="voiceMicIcon">🎙️</span>
             <span id="voiceBtnLabel">Live-Diktat starten</span>
           </button>
-          <div class="voice-meter-wrap">
+          <div class="voice-meter-wrap" title="Roter Strich = Noise-Gate-Schwelle (erst darüber startet die Sprachaufnahme)">
             <div class="voice-meter-bar" id="voiceLevelBar"></div>
+            <div class="voice-gate-marker" id="voiceGateMarker" style="left: 28%;"></div>
+          </div>
+          <div style="width:100%; display:flex; align-items:center; gap:8px; margin-top:2px;">
+            <span style="font-size:0.72rem; color:var(--text-muted); white-space:nowrap;" id="lblNoiseGate">Noise-Gate (Störfilter): Mittel</span>
+            <input type="range" id="rangeNoiseGate" min="5" max="45" step="2" value="15" style="flex:1; accent-color:var(--danger);">
           </div>
           <div class="voice-interim" id="voiceInterimLine">Mikrofon auf dem Pixel antippen und einfach lossprechen…</div>
+          <div style="font-size:0.7rem; color:var(--text-muted); border-top:1px solid rgba(255,255,255,0.06); width:100%; padding-top:6px; text-align:center;" id="voiceUsageStats">
+            📊 Verbrauch: 0.0s Audio • ~0 Tokens • ~$0.0000
+          </div>
         </div>
 
         <!-- Quick Actions while speaking -->
@@ -206,7 +214,7 @@
         </div>
 
         <div class="checkbox-row">
-          <label><input type="checkbox" id="chkVoiceClean" checked> Füllwörter („ähm“) entfernen &amp; perfekte Kommasetzung</label>
+          <label><input type="checkbox" id="chkVoiceClean" checked> Füllwörter („äh/ähm“) strikt streichen &amp; Sätze glätten</label>
         </div>
         <div class="checkbox-row">
           <label><input type="checkbox" id="chkVoiceCommands" checked> Sprachbefehle („Neue Zeile“ = Enter, „Tabulator“ = Tab)</label>
@@ -240,25 +248,21 @@
             </select>
           </div>
           <div>
-            <label class="field-label">Gemini-Modell</label>
+            <label class="field-label">Gemini-Modell (3.x / Flash-Lite zuerst)</label>
             <select id="selGeminiModel">
-              <option value="gemini-2.5-flash">gemini-2.5-flash (Empfohlen)</option>
-              <option value="gemini-2.5-flash-lite">gemini-2.5-flash-lite (Ultra-Schnell)</option>
-              <option value="gemini-2.5-pro">gemini-2.5-pro (Max. Präzision)</option>
-              <option value="gemini-2.0-flash">gemini-2.0-flash</option>
-              <option value="gemini-2.0-flash-exp">gemini-2.0-flash-exp (Live-WS)</option>
+              <option value="gemini-2.5-flash">Bitte unten "Modelle laden" tippen…</option>
             </select>
           </div>
         </div>
 
         <div style="margin-bottom:10px;">
-          <label class="field-label">Eigene Modell-ID (optional – überschreibt Dropdown, z.B. für Preview/3.5-Modelle)</label>
-          <input type="text" id="inpCustomGeminiModel" placeholder="Leer lassen für Dropdown-Auswahl oder z.B. gemini-2.5-flash eintragen">
+          <label class="field-label">Eigene Modell-ID (optional – überschreibt Dropdown)</label>
+          <input type="text" id="inpCustomGeminiModel" placeholder="Leer lassen für Dropdown-Auswahl">
         </div>
 
         <div style="margin-bottom:10px; display:flex; align-items:center; gap:10px;">
-          <span style="font-size:0.75rem; color:var(--text-muted); white-space:nowrap;" id="lblVadSilence">Sprechpause: 0.7s</span>
-          <input type="range" id="rangeVadSilence" min="400" max="2000" step="100" value="750" style="flex:1; accent-color:var(--primary);">
+          <span style="font-size:0.75rem; color:var(--text-muted); white-space:nowrap;" id="lblVadSilence">Sprechpause: 0.8s</span>
+          <input type="range" id="rangeVadSilence" min="400" max="2200" step="100" value="800" style="flex:1; accent-color:var(--primary);">
         </div>
 
         <div class="btn-row" style="margin-top:4px;">
@@ -633,6 +637,6 @@
     </button>
   </nav>
 
-  <script src="./app.js?v=7"></script>
+  <script src="./app.js?v=8"></script>
 </body>
 </html>

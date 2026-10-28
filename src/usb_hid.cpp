@@ -14,6 +14,11 @@ static USBHIDMouse Mouse;
 static USBHIDConsumerControl ConsumerControl;
 
 static void sendRawKey(uint8_t modifiers, uint8_t keycode, uint16_t holdMs) {
+    if (modifiers != 0 && keycode != 0) {
+        KeyReport modOnly = {modifiers, 0, {0, 0, 0, 0, 0, 0}};
+        Keyboard.sendReport(&modOnly);
+        delay(4);
+    }
     KeyReport down = {modifiers, 0, {keycode, 0, 0, 0, 0, 0}};
     Keyboard.sendReport(&down);
     delay(holdMs);
@@ -28,7 +33,7 @@ void usbHidBegin() {
     USB.PID(0xC52B);
     USB.manufacturerName("Logitech");
     USB.productName("USB Receiver");
-    USB.serialNumber(""); // Keine verräterische Espressif-MAC als Seriennummer
+    USB.serialNumber("400400C52B");
 
     Keyboard.begin();
     Mouse.begin();
@@ -38,9 +43,9 @@ void usbHidBegin() {
 
 void usbHidTypeText(const char *text, KeyboardLayout layout, uint16_t keyDelayMs) {
     if (!text) return;
-    if (keyDelayMs < 2) keyDelayMs = 2;
+    if (keyDelayMs < 4) keyDelayMs = 4;
     uint16_t halfDelay = keyDelayMs / 2;
-    if (halfDelay < 2) halfDelay = 2;
+    if (halfDelay < 3) halfDelay = 3;
 
     size_t i = 0;
     while (text[i] != 0) {
@@ -102,7 +107,7 @@ void usbHidCombo(const uint8_t *mods, uint8_t modCount, uint8_t key, KeyboardLay
         }
     }
 
-    sendRawKey(modMask, usageKey, 20);
+    sendRawKey(modMask, usageKey, 25);
 }
 
 void usbHidMouseMove(int8_t dx, int8_t dy, int8_t wheel, int8_t pan) {

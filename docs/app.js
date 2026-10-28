@@ -292,14 +292,16 @@
     if (!silent) addLog('TX', cmdLine);
 
     const payload = new TextEncoder().encode(cmdLine + '\n');
-    const chunkSize = 180;
+    const chunkSize = 20; // 20 Bytes passt garantiert in jede BLE-MTU (auch MTU 23)
 
     writePromise = writePromise
       .then(async () => {
         for (let offset = 0; offset < payload.length; offset += chunkSize) {
           const slice = payload.slice(offset, offset + chunkSize);
-          if (rxChar.properties && rxChar.properties.writeWithoutResponse && silent) {
+          if (silent && typeof rxChar.writeValueWithoutResponse === 'function') {
             await rxChar.writeValueWithoutResponse(slice);
+          } else if (typeof rxChar.writeValueWithResponse === 'function') {
+            await rxChar.writeValueWithResponse(slice);
           } else {
             await rxChar.writeValue(slice);
           }
@@ -307,7 +309,9 @@
         return true;
       })
       .catch((err) => {
-        if (!silent) addLog('ERR', err.message || String(err));
+        const msg = err && err.message ? err.message : String(err);
+        addLog('ERR', msg);
+        if (!silent) showToast(`BLE-Fehler: ${msg}`);
         return false;
       });
 
